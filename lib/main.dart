@@ -1,22 +1,38 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'constants/app_colors.dart';
 import 'screens/home_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
 import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
-import 'firebase_options.dart'; // 생성된 firebase_options.dart 임포트
+import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Firebase 초기화
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  
+
+  // App Check: 개발 중에는 디버그 프로바이더 사용
+  await FirebaseAppCheck.instance.activate(
+    androidProvider: AndroidProvider.debug,
+    appleProvider: AppleProvider.debug,
+  );
+
+  // 익명 로그인 (Firebase Storage 업로드 권한 확보)
+  if (FirebaseAuth.instance.currentUser == null) {
+    try {
+      await FirebaseAuth.instance.signInAnonymously();
+    } catch (_) {
+      // 네트워크 오류 시 무시하고 앱 계속 실행
+    }
+  }
+
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const AiFashionAssistantApp());
 }

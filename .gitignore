@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# API Keys (보안상 절대 커밋하지 마세요)
+lib/config/env.dart
