@@ -65,4 +65,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'ai-fashion-assistant-eb206.firebasestorage.app',
     iosBundleId: 'com.fashionai.aiFashionAssistant',
   );
+
 }

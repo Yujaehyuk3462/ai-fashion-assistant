@@ -4,6 +4,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'constants/app_colors.dart';
+import 'models/wardrobe_item.dart';
+import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
@@ -18,20 +20,10 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // App Check: 개발 중에는 디버그 프로바이더 사용
   await FirebaseAppCheck.instance.activate(
     androidProvider: AndroidProvider.debug,
     appleProvider: AppleProvider.debug,
   );
-
-  // 익명 로그인 (Firebase Storage 업로드 권한 확보)
-  if (FirebaseAuth.instance.currentUser == null) {
-    try {
-      await FirebaseAuth.instance.signInAnonymously();
-    } catch (_) {
-      // 네트워크 오류 시 무시하고 앱 계속 실행
-    }
-  }
 
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const AiFashionAssistantApp());
@@ -50,7 +42,22 @@ class AiFashionAssistantApp extends StatelessWidget {
         scaffoldBackgroundColor: AppColors.background,
         useMaterial3: true,
       ),
-      home: const AppShell(),
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              backgroundColor: AppColors.background,
+              body: Center(
+                child: CircularProgressIndicator(
+                    color: AppColors.navy, strokeWidth: 2),
+              ),
+            );
+          }
+          if (snapshot.hasData) return const AppShell();
+          return const LoginScreen();
+        },
+      ),
     );
   }
 }
@@ -65,6 +72,42 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _tabIndex = 0;
   bool _showItemDetail = false;
+
+  // ── 피팅룸 아이템 상태 ──────────────────────────────────
+  final Map<String, WardrobeItem?> _fittingItems = {
+    '상의': null,
+    '하의': null,
+    '아우터': null,
+  };
+  WardrobeItem? _fittingUserPhoto; // 전신 사진
+
+  // 옷장 탭에서 선택 → 피팅룸 이동
+  void _sendToFittingRoom(WardrobeItem item) {
+    setState(() {
+      _fittingItems[item.category] = item;
+      _tabIndex = 2;
+    });
+  }
+
+  // 피팅룸 인라인: 슬롯에 아이템 설정
+  void _setFittingItem(String category, WardrobeItem item) {
+    setState(() => _fittingItems[category] = item);
+  }
+
+  // 피팅룸 인라인: 슬롯 비우기
+  void _clearFittingItem(String category) {
+    setState(() => _fittingItems[category] = null);
+  }
+
+  // 피팅룸 인라인: 전신 사진 설정
+  void _setFittingUserPhoto(WardrobeItem item) {
+    setState(() => _fittingUserPhoto = item);
+  }
+
+  // 피팅룸 인라인: 전신 사진 초기화
+  void _clearFittingUserPhoto() {
+    setState(() => _fittingUserPhoto = null);
+  }
 
   void _navigateToDetail() => setState(() {
         _showItemDetail = true;
@@ -96,9 +139,18 @@ class _AppShellState extends State<AppShell> {
       case 0:
         return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
       case 1:
-        return const WardrobeScreen();
+        // 옷장: 아이템 선택 콜백 전달
+        return WardrobeScreen(onSelectItem: _sendToFittingRoom);
       case 2:
-        return FittingRoomScreen(onNavigateToDetail: _navigateToDetail);
+        return FittingRoomScreen(
+          selectedItems: Map.from(_fittingItems),
+          userPhoto: _fittingUserPhoto,
+          onSetItem: _setFittingItem,
+          onClearItem: _clearFittingItem,
+          onSetUserPhoto: _setFittingUserPhoto,
+          onClearUserPhoto: _clearFittingUserPhoto,
+          onNavigateToDetail: _navigateToDetail,
+        );
       case 3:
         return const SettingsScreen();
       default:
@@ -107,6 +159,7 @@ class _AppShellState extends State<AppShell> {
   }
 }
 
+// ── 하단 네비게이션 바 ─────────────────────────────────────
 class _BottomNav extends StatelessWidget {
   final int activeIndex;
   final ValueChanged<int> onTap;
@@ -115,9 +168,18 @@ class _BottomNav extends StatelessWidget {
 
   static const _items = [
     _NavItem(icon: Icons.home_outlined, activeIcon: Icons.home, label: '홈'),
-    _NavItem(icon: Icons.checkroom_outlined, activeIcon: Icons.checkroom, label: '옷장'),
-    _NavItem(icon: Icons.auto_awesome_outlined, activeIcon: Icons.auto_awesome, label: 'AI 피팅'),
-    _NavItem(icon: Icons.settings_outlined, activeIcon: Icons.settings, label: '설정'),
+    _NavItem(
+        icon: Icons.checkroom_outlined,
+        activeIcon: Icons.checkroom,
+        label: '옷장'),
+    _NavItem(
+        icon: Icons.auto_awesome_outlined,
+        activeIcon: Icons.auto_awesome,
+        label: 'AI 피팅'),
+    _NavItem(
+        icon: Icons.settings_outlined,
+        activeIcon: Icons.settings,
+        label: '설정'),
   ];
 
   @override
@@ -147,12 +209,16 @@ class _BottomNav extends StatelessWidget {
                         width: 48,
                         height: 32,
                         decoration: BoxDecoration(
-                          color: isActive ? AppColors.bluePale : Colors.transparent,
+                          color: isActive
+                              ? AppColors.bluePale
+                              : Colors.transparent,
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Icon(
                           isActive ? item.activeIcon : item.icon,
-                          color: isActive ? AppColors.blue : AppColors.textPlaceholder,
+                          color: isActive
+                              ? AppColors.blue
+                              : AppColors.textPlaceholder,
                           size: 22,
                         ),
                       ),
@@ -161,8 +227,11 @@ class _BottomNav extends StatelessWidget {
                         item.label,
                         style: TextStyle(
                           fontSize: 11,
-                          fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                          color: isActive ? AppColors.blue : AppColors.textPlaceholder,
+                          fontWeight:
+                              isActive ? FontWeight.w700 : FontWeight.w500,
+                          color: isActive
+                              ? AppColors.blue
+                              : AppColors.textPlaceholder,
                         ),
                       ),
                     ],
@@ -182,5 +251,6 @@ class _NavItem {
   final IconData activeIcon;
   final String label;
 
-  const _NavItem({required this.icon, required this.activeIcon, required this.label});
+  const _NavItem(
+      {required this.icon, required this.activeIcon, required this.label});
 }

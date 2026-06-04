@@ -22,7 +22,7 @@ android {
 
     defaultConfig {
         applicationId = "com.fashionai.ai_fashion_assistant"
-        minSdk = flutter.minSdkVersion // Firebase 사용을 위해 21 이상 권장
+        minSdk = flutter.minSdkVersion // Firebase + image_picker 최소 요구사항
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

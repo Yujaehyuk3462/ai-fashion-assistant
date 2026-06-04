@@ -41,7 +41,7 @@ class SettingsScreen extends StatelessWidget {
                 ..._settingsGroups.map((group) => _buildGroup(group)),
                 const SizedBox(height: 8),
                 const Text(
-                  'StyleAI v1.0.0 · Made with ❤️',
+                  'StyleAI v1.0.0',
                   style: TextStyle(color: AppColors.textDisabled, fontSize: 11),
                 ),
               ],
@@ -71,7 +71,7 @@ class SettingsScreen extends StatelessWidget {
               color: Colors.white.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(16),
             ),
-            child: const Center(child: Text('😎', style: TextStyle(fontSize: 24))),
+            child: const Icon(Icons.person_outline, color: Colors.white70, size: 28),
           ),
           const SizedBox(width: 16),
           const Column(
