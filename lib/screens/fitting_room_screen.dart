@@ -698,6 +698,22 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
+  // ── 전체 화면 이미지 뷰어 ────────────────────────────────
+  void _openFullScreenImage() {
+    if (_fittingImage == null && _mockFittingImageUrl == null) return;
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.black,
+        pageBuilder: (_, __, ___) => _FullScreenImageViewer(
+          imageBytes: _fittingImage,
+          imageUrl: _fittingImage == null ? _mockFittingImageUrl : null,
+          label: _fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+        ),
+      ),
+    );
+  }
+
   // ── 분석 완료 결과 카드 ──────────────────────────────────
   Widget _buildResultCard() {
     return Container(
@@ -718,75 +734,92 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
         children: [
           // 피팅 이미지 영역 — 이미지가 있을 때만 표시
           if (_fittingImage != null || _mockFittingImageUrl != null)
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              child: Stack(
-                children: [
-                  if (_fittingImage != null)
-                    Image.memory(
-                      _fittingImage!,
-                      width: double.infinity,
-                      height: 320,
-                      fit: BoxFit.cover,
-                    )
-                  else
-                    CachedNetworkImage(
-                      imageUrl: _mockFittingImageUrl!,
-                      width: double.infinity,
-                      height: 320,
-                      fit: BoxFit.cover,
-                      placeholder: (_, __) => Container(
-                          height: 320,
-                          color: AppColors.background,
-                          child: const Center(
-                              child: CircularProgressIndicator(
-                                  color: AppColors.navy, strokeWidth: 2))),
-                      errorWidget: (_, __, ___) => Container(
-                          height: 220,
-                          color: AppColors.background,
-                          child: const Icon(Icons.image_outlined,
-                              color: AppColors.textDisabled, size: 40)),
-                    ),
-                  Positioned(
-                    top: 14,
-                    left: 14,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                          color: AppColors.navy.withValues(alpha: 0.88),
-                          borderRadius: BorderRadius.circular(8)),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
-                          const SizedBox(width: 5),
-                          Text(
-                            _fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ],
+            GestureDetector(
+              onTap: _openFullScreenImage,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                child: Stack(
+                  children: [
+                    if (_fittingImage != null)
+                      Image.memory(
+                        _fittingImage!,
+                        width: double.infinity,
+                        height: 320,
+                        fit: BoxFit.cover,
+                      )
+                    else
+                      CachedNetworkImage(
+                        imageUrl: _mockFittingImageUrl!,
+                        width: double.infinity,
+                        height: 320,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) => Container(
+                            height: 320,
+                            color: AppColors.background,
+                            child: const Center(
+                                child: CircularProgressIndicator(
+                                    color: AppColors.navy, strokeWidth: 2))),
+                        errorWidget: (_, __, ___) => Container(
+                            height: 220,
+                            color: AppColors.background,
+                            child: const Icon(Icons.image_outlined,
+                                color: AppColors.textDisabled, size: 40)),
                       ),
-                    ),
-                  ),
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      height: 80,
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [Colors.transparent, Colors.white],
+                    Positioned(
+                      top: 14,
+                      left: 14,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                            color: AppColors.navy.withValues(alpha: 0.88),
+                            borderRadius: BorderRadius.circular(8)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
+                            const SizedBox(width: 5),
+                            Text(
+                              _fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                  ),
-                ],
+                    Positioned(
+                      top: 14,
+                      right: 14,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.fullscreen,
+                            color: Colors.white, size: 18),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      child: Container(
+                        height: 80,
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Colors.transparent, Colors.white],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           // 분석 텍스트
@@ -938,6 +971,89 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── 전체 화면 이미지 뷰어 위젯 ───────────────────────────
+class _FullScreenImageViewer extends StatelessWidget {
+  final Uint8List? imageBytes;
+  final String? imageUrl;
+  final String label;
+
+  const _FullScreenImageViewer({
+    this.imageBytes,
+    this.imageUrl,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Center(
+            child: InteractiveViewer(
+              minScale: 0.8,
+              maxScale: 5.0,
+              child: imageBytes != null
+                  ? Image.memory(imageBytes!, fit: BoxFit.contain)
+                  : CachedNetworkImage(
+                      imageUrl: imageUrl!,
+                      fit: BoxFit.contain,
+                      placeholder: (_, __) => const Center(
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2)),
+                      errorWidget: (_, __, ___) => const Icon(
+                          Icons.image_outlined,
+                          color: Colors.white54,
+                          size: 48),
+                    ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                        color: AppColors.navy.withValues(alpha: 0.88),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
+                        const SizedBox(width: 5),
+                        Text(label,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.close, color: Colors.white, size: 20),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
