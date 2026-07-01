@@ -4,15 +4,10 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../constants/app_colors.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
-import '../services/gemini_service.dart';
-
-const _mockImages = {
-  '아우터': 'https://images.unsplash.com/photo-1617137968427-85924c800a22?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=900&w=600&q=80',
-  '캐주얼': 'https://images.unsplash.com/photo-1480455624313-e29b44bbfde1?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=900&w=600&q=80',
-  '기본':   'https://images.unsplash.com/photo-1490578474895-699cd4e2cf59?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=900&w=600&q=80',
-};
+import '../services/fitting_job_controller.dart';
 
 class FittingRoomScreen extends StatefulWidget {
+  final FittingJobController jobController;
   final Map<String, WardrobeItem?> selectedItems;
   final WardrobeItem? userPhoto;
   final Function(String category, WardrobeItem item) onSetItem;
@@ -23,6 +18,7 @@ class FittingRoomScreen extends StatefulWidget {
 
   const FittingRoomScreen({
     super.key,
+    required this.jobController,
     required this.selectedItems,
     required this.userPhoto,
     required this.onSetItem,
@@ -37,39 +33,63 @@ class FittingRoomScreen extends StatefulWidget {
 }
 
 class _FittingRoomScreenState extends State<FittingRoomScreen> {
-  bool _isAnalyzing = false;
-  bool _isGeneratingFitting = false;
-  String? _analysisResult;
   String? _mockFittingImageUrl;
-  Uint8List? _fittingImage;
   final ScrollController _scrollController = ScrollController();
 
   @override
+  void initState() {
+    super.initState();
+    // 컨트롤러는 AppShell 레벨에서 살아있으므로, 다른 탭에 있는 동안
+    // 완료된 작업 결과도 여기서 리스너를 통해 그대로 반영된다.
+    widget.jobController.addListener(_onJobChanged);
+  }
+
+  @override
   void dispose() {
+    widget.jobController.removeListener(_onJobChanged);
     _scrollController.dispose();
     super.dispose();
   }
 
+  void _onJobChanged() {
+    if (mounted) setState(() {});
+  }
+
+  // ── 점수 파싱 헬퍼 ──────────────────────────────────────
+  int? _parseScore(String text) {
+    final match = RegExp(r'\[점수\]\s*(\d+)').firstMatch(text);
+    if (match == null) return null;
+    final score = int.tryParse(match.group(1) ?? '');
+    if (score == null) return null;
+    return score.clamp(1, 100);
+  }
+
+  String _stripScoreLine(String text) {
+    return text.replaceFirst(RegExp(r'\[점수\]\s*\d+\n?'), '').trim();
+  }
+
+  Color _scoreColor(int score) {
+    if (score >= 85) return const Color(0xFF2563EB);
+    if (score >= 70) return const Color(0xFF16A34A);
+    if (score >= 50) return const Color(0xFFD97706);
+    return const Color(0xFFDC2626);
+  }
+
+  String _scoreLabel(int score) {
+    if (score >= 85) return '매우 잘 어울려요';
+    if (score >= 70) return '잘 어울려요';
+    if (score >= 50) return '무난한 조합이에요';
+    return '조합 개선이 필요해요';
+  }
+
   bool get _canAnalyze =>
       widget.selectedItems.values.any((v) => v != null) &&
-      !_isAnalyzing &&
-      !_isGeneratingFitting;
+      !widget.jobController.isBusy;
 
   bool get _canGenerateFitting =>
       widget.userPhoto != null &&
       widget.selectedItems.values.any((v) => v != null) &&
-      !_isAnalyzing &&
-      !_isGeneratingFitting;
-
-  String _pickMockImage() {
-    final cats = widget.selectedItems.entries
-        .where((e) => e.value != null)
-        .map((e) => e.key)
-        .toList();
-    if (cats.contains('아우터')) return _mockImages['아우터']!;
-    if (cats.contains('하의') && cats.contains('상의')) return _mockImages['캐주얼']!;
-    return _mockImages['기본']!;
-  }
+      !widget.jobController.isBusy;
 
   void _scrollToResult() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -87,74 +107,66 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   Future<void> _analyze() async {
     if (!_canAnalyze) return;
     final selectedList = widget.selectedItems.values.whereType<WardrobeItem>().toList();
+    final userPhoto = widget.userPhoto;
 
-    setState(() {
-      _isAnalyzing = true;
-      _analysisResult = null;
-      _mockFittingImageUrl = null;
-      _fittingImage = null;
-    });
+    setState(() => _mockFittingImageUrl = null);
 
-    try {
-      final result = await GeminiService.analyzeOutfit(
-        clothingImageUrls: selectedList.map((i) => i.imageUrl).toList(),
-        clothingCategories: selectedList.map((i) => i.category).toList(),
-        userPhotoUrl: widget.userPhoto?.imageUrl,
-      );
-      if (mounted) {
-        setState(() {
-          _analysisResult = result;
-          _mockFittingImageUrl = widget.userPhoto?.imageUrl; // 내 사진 없으면 null
-        });
-        _scrollToResult();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('분석 실패: $e'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppColors.red,
-        ));
-      }
-    } finally {
-      if (mounted) setState(() => _isAnalyzing = false);
+    // jobController.analyze()는 위젯과 무관하게 끝까지 실행되므로,
+    // 이 화면을 벗어났다가 돌아와도 결과가 유지된다. 여기서의 await는
+    // 스낵바 표시·자동 스크롤 같은 "이 화면이 떠 있을 때만" 필요한
+    // UX 후처리를 위한 것일 뿐이다.
+    await widget.jobController.analyze(
+      clothingItems: selectedList,
+      userPhoto: userPhoto,
+    );
+    if (!mounted) return;
+
+    final error = widget.jobController.analysisError;
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('분석 실패: $error'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.red,
+        action: SnackBarAction(
+          label: '다시 시도',
+          textColor: Colors.white,
+          onPressed: _analyze,
+        ),
+      ));
+      return;
     }
+    setState(() => _mockFittingImageUrl = userPhoto?.imageUrl); // 내 사진 없으면 null
+    _scrollToResult();
   }
 
   // ── Gemini 가상 피팅 이미지 생성 ─────────────────────────
   Future<void> _generateFitting() async {
     if (!_canGenerateFitting) return;
     final selectedList = widget.selectedItems.values.whereType<WardrobeItem>().toList();
+    final userPhoto = widget.userPhoto!;
 
-    setState(() {
-      _isGeneratingFitting = true;
-      _fittingImage = null;
-    });
+    await widget.jobController.generateFitting(
+      userPhoto: userPhoto,
+      clothingItems: selectedList,
+    );
+    if (!mounted) return;
 
-    try {
-      final result = await GeminiService.generateFittingImage(
-        userPhotoUrl: widget.userPhoto!.imageUrl,
-        clothingImageUrls: selectedList.map((i) => i.imageUrl).toList(),
-        clothingNames: selectedList.map((i) => i.category).toList(),
-      );
-      if (mounted) {
-        setState(() {
-          _fittingImage = result;
-          _mockFittingImageUrl ??= widget.userPhoto?.imageUrl ?? _pickMockImage();
-        });
-        _scrollToResult();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('가상 피팅 실패: $e'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppColors.red,
-        ));
-      }
-    } finally {
-      if (mounted) setState(() => _isGeneratingFitting = false);
+    final error = widget.jobController.fittingError;
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('가상 피팅 실패: $error'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.red,
+        action: SnackBarAction(
+          label: '다시 시도',
+          textColor: Colors.white,
+          onPressed: _generateFitting,
+        ),
+      ));
+      return;
     }
+    setState(() => _mockFittingImageUrl ??= userPhoto.imageUrl);
+    _scrollToResult();
   }
 
   void _showPhotoPicker() {
@@ -221,7 +233,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     const SizedBox(height: 24),
                     _buildActionButtons(),
                     const SizedBox(height: 20),
-                    (_analysisResult != null || _fittingImage != null)
+                    (widget.jobController.analysisResult != null ||
+                            widget.jobController.fittingImage != null)
                         ? _buildResultCard()
                         : _buildResultPlaceholder(),
                   ],
@@ -230,8 +243,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
             ),
           ],
         ),
-        if (_isAnalyzing || _isGeneratingFitting)
-          _buildAnalyzingOverlay(isFitting: _isGeneratingFitting),
+        if (widget.jobController.isAnalyzing || widget.jobController.isGeneratingFitting)
+          _buildAnalyzingOverlay(isFitting: widget.jobController.isGeneratingFitting),
       ],
     );
   }
@@ -700,15 +713,16 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   // ── 전체 화면 이미지 뷰어 ────────────────────────────────
   void _openFullScreenImage() {
-    if (_fittingImage == null && _mockFittingImageUrl == null) return;
+    final fittingImage = widget.jobController.fittingImage;
+    if (fittingImage == null && _mockFittingImageUrl == null) return;
     Navigator.of(context).push(
       PageRouteBuilder(
         opaque: false,
         barrierColor: Colors.black,
         pageBuilder: (_, __, ___) => _FullScreenImageViewer(
-          imageBytes: _fittingImage,
-          imageUrl: _fittingImage == null ? _mockFittingImageUrl : null,
-          label: _fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+          imageBytes: fittingImage,
+          imageUrl: fittingImage == null ? _mockFittingImageUrl : null,
+          label: fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
         ),
       ),
     );
@@ -716,6 +730,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   // ── 분석 완료 결과 카드 ──────────────────────────────────
   Widget _buildResultCard() {
+    final fittingImage = widget.jobController.fittingImage;
+    final analysisResult = widget.jobController.analysisResult;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -733,16 +749,16 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 피팅 이미지 영역 — 이미지가 있을 때만 표시
-          if (_fittingImage != null || _mockFittingImageUrl != null)
+          if (fittingImage != null || _mockFittingImageUrl != null)
             GestureDetector(
               onTap: _openFullScreenImage,
               child: ClipRRect(
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                 child: Stack(
                   children: [
-                    if (_fittingImage != null)
+                    if (fittingImage != null)
                       Image.memory(
-                        _fittingImage!,
+                        fittingImage,
                         width: double.infinity,
                         height: 320,
                         fit: BoxFit.cover,
@@ -779,7 +795,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                             const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
                             const SizedBox(width: 5),
                             Text(
-                              _fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+                              fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
                               style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 11,
@@ -823,7 +839,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
               ),
             ),
           // 분석 텍스트
-          if (_analysisResult != null)
+          if (analysisResult != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
               child: Column(
@@ -858,8 +874,79 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                   ),
                   const SizedBox(height: 14),
                   Container(height: 1, color: AppColors.border),
-                  const SizedBox(height: 14),
-                  Text(_analysisResult!,
+                  const SizedBox(height: 16),
+                  // ── 컬러 조합 점수 배지 ──────────────────────────
+                  Builder(builder: (context) {
+                    final score = _parseScore(analysisResult);
+                    if (score == null) return const SizedBox.shrink();
+                    final color = _scoreColor(score);
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.07),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: color.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 56,
+                            height: 56,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                CircularProgressIndicator(
+                                  value: score / 100,
+                                  strokeWidth: 5,
+                                  backgroundColor: color.withValues(alpha: 0.15),
+                                  valueColor: AlwaysStoppedAnimation<Color>(color),
+                                ),
+                                Center(
+                                  child: Text(
+                                    '$score',
+                                    style: TextStyle(
+                                      color: color,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('컬러 조합 점수',
+                                    style: TextStyle(
+                                        color: AppColors.textMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _scoreLabel(score),
+                                  style: TextStyle(
+                                      color: color,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 2),
+                                Text('$score / 100점',
+                                    style: TextStyle(
+                                        color: color.withValues(alpha: 0.75),
+                                        fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  Text(_stripScoreLine(analysisResult),
                       style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 14,

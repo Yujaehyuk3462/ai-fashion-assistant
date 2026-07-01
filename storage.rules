@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // storage_service.dart가 wardrobe_images/{fileName}에 업로드/삭제한다.
+    // Firestore 규칙과 마찬가지로 인증된 사용자(익명 포함)에게만 허용.
+    match /wardrobe_images/{fileName} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

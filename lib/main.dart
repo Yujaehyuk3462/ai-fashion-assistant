@@ -11,6 +11,7 @@ import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
 import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/fitting_job_controller.dart';
 import 'firebase_options.dart';
 
 void main() async {
@@ -81,6 +82,16 @@ class _AppShellState extends State<AppShell> {
   };
   WardrobeItem? _fittingUserPhoto; // 전신 사진
 
+  // AppShell(탭 전환에도 살아있는 레벨)에서 보관 → 다른 탭으로 이동해도
+  // 진행 중인 AI 분석/가상 피팅 작업과 결과가 유지된다.
+  final FittingJobController _fittingJob = FittingJobController();
+
+  @override
+  void dispose() {
+    _fittingJob.dispose();
+    super.dispose();
+  }
+
   // 옷장 탭에서 선택 → 피팅룸 이동
   void _sendToFittingRoom(WardrobeItem item) {
     setState(() {
@@ -143,6 +154,7 @@ class _AppShellState extends State<AppShell> {
         return WardrobeScreen(onSelectItem: _sendToFittingRoom);
       case 2:
         return FittingRoomScreen(
+          jobController: _fittingJob,
           selectedItems: Map.from(_fittingItems),
           userPhoto: _fittingUserPhoto,
           onSetItem: _setFittingItem,

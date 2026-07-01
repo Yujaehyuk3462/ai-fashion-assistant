@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 현재 앱은 uid로 아이템을 구분하지 않고 모든 로그인 사용자가
+    // 같은 wardrobe 컬렉션을 공유한다. 일단 "인증된 사용자만 허용"으로
+    // permission-denied를 해결하되, 사용자별 데이터 분리는 별도 작업 필요.
+    match /wardrobe/{itemId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

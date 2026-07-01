@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
@@ -5,9 +6,28 @@ import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
+import '../services/gemini_service.dart';
 import '../services/storage_service.dart';
 
 const _uploadCategories = ['상의', '하의', '아우터', '전신'];
+
+// 위젯과 무관하게 실행되는 백그라운드 작업 — 업로드 화면을 벗어나도
+// 계속 진행되고, 실패해도 조용히 무시한다(분석 시점 폴백이 나중에 채운다).
+Future<void> _extractAndCacheAttributes(
+  String itemId,
+  String imageUrl,
+  String category,
+) async {
+  try {
+    final attributes = await GeminiService.extractAttributes(
+      imageUrl: imageUrl,
+      category: category,
+    );
+    await FirestoreService.updateWardrobeAttributes(itemId, attributes);
+  } catch (_) {
+    // 업로드 자체는 이미 끝난 뒤라 실패를 사용자에게 노출하지 않는다.
+  }
+}
 
 class WardrobeScreen extends StatefulWidget {
   final ValueChanged<WardrobeItem>? onSelectItem;
@@ -192,9 +212,13 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Future<void> _pickAndUpload(ImageSource source) async {
+    // 해상도를 미리 낮춰 두면 Storage 업로드는 물론, 이후 AI 분석/피팅 때마다
+    // 반복되는 다운로드·base64 인코딩 페이로드도 함께 줄어든다.
     final xFile = await ImagePicker().pickImage(
       source: source,
       imageQuality: 80,
+      maxWidth: 1440,
+      maxHeight: 1440,
     );
     if (xFile == null || !mounted) return;
 
@@ -210,10 +234,12 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     setState(() => _isUploading = true);
     try {
       final imageUrl = await StorageService.uploadWardrobeImage(xFile);
-      await FirestoreService.addWardrobeItem(
+      final itemId = await FirestoreService.addWardrobeItem(
         imageUrl: imageUrl,
         category: category,
       );
+      // 속성 추출은 업로드 완료를 기다리게 하지 않고 백그라운드로 흘려보낸다.
+      unawaited(_extractAndCacheAttributes(itemId, imageUrl, category));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
