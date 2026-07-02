@@ -8,6 +8,13 @@ import 'gemini_api_exception.dart';
 class GeminiService {
   static const _baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
 
+  // 모델명을 한 곳에 모아서 나중에 교체하기 쉽게 관리한다.
+  // gemini-3-flash-preview로 시도해봤으나 응답이 중간에 잘리는 등
+  // preview 특유의 불안정함이 반복 확인돼 안정적인 gemini-3.5-flash로 되돌림.
+  // 이미지 합성(Nano Banana Pro)은 그대로 gemini-3-pro-image를 유지한다.
+  static const _textModel = 'gemini-3.5-flash';
+  static const _imageModel = 'gemini-3-pro-image';
+
   // 커넥션을 재사용해 매 요청마다의 TLS 핸드셰이크 비용을 줄인다.
   static final http.Client _client = http.Client();
 
@@ -45,7 +52,7 @@ class GeminiService {
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/gemini-3-pro-image:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse('$_baseUrl/models/$_imageModel:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
@@ -75,18 +82,24 @@ class GeminiService {
       'contents': [{'parts': parts}],
       'generationConfig': {
         'temperature': 0.2,
-        'maxOutputTokens': 250,
+        'maxOutputTokens': 500,
         'responseMimeType': 'application/json',
+        // 실측 결과 thinking(추론) 단계가 maxOutputTokens 예산을 거의 다
+        // 먹어버려서(예: 478/500) 실제 JSON은 "{" 한두 글자만 쓰고 잘리는
+        // 경우가 반복 확인됐다. 색상/스타일 분류는 추론이 필요 없는 단순
+        // 작업이라 thinking budget을 0으로 꺼서 근본적으로 방지한다.
+        'thinkingConfig': {'thinkingBudget': 0},
       },
     });
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/gemini-3.5-flash:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
-        .timeout(const Duration(seconds: 30));
+        // preview 모델이라 3.5-flash보다 응답 지연이 더 클 수 있어 여유를 둔다.
+        .timeout(const Duration(seconds: 60));
 
     if (response.statusCode != 200) {
       final errorBody = jsonDecode(response.body);
@@ -139,14 +152,17 @@ class GeminiService {
       ...imageParts,
     ];
 
+    // maxOutputTokens는 thinking(추론) 토큰과 같은 예산을 공유한다.
+    // 스타일링 조언은 어느 정도 추론이 품질에 도움이 되므로 thinking은
+    // 끄지 않되, 실제 답변이 잘리지 않도록 예산을 넉넉히 둔다.
     final requestBody = jsonEncode({
       'contents': [{'parts': parts}],
-      'generationConfig': {'temperature': 0.7, 'maxOutputTokens': 1200},
+      'generationConfig': {'temperature': 0.7, 'maxOutputTokens': 3000},
     });
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/gemini-3.5-flash:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
@@ -238,7 +254,9 @@ $clothingList
 
   static String _buildAttributeExtractionPrompt(String category) {
     return '''
-아래 옷 사진 한 장을 분석해서 JSON 객체 하나만 출력하세요. 설명, 마크다운, 코드블록 없이 순수 JSON만 답하세요.
+아래 옷 사진 한 장을 분석해서 JSON 객체 하나만 출력하세요.
+응답은 반드시 '{' 문자로 즉시 시작해야 합니다. "Here is the JSON" 같은 설명 문구,
+마크다운, 코드블록을 절대 앞에 붙이지 마세요. 순수 JSON 객체만 출력하세요.
 이 옷의 카테고리는 "$category"입니다.
 
 형식:

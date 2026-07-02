@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
+import '../models/clothing_attributes.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 import '../services/gemini_service.dart';
@@ -19,13 +20,23 @@ Future<void> _extractAndCacheAttributes(
   String category,
 ) async {
   try {
-    final attributes = await GeminiService.extractAttributes(
-      imageUrl: imageUrl,
-      category: category,
-    );
+    final attributes = await _extractAttributesWithRetry(imageUrl, category);
     await FirestoreService.updateWardrobeAttributes(itemId, attributes);
   } catch (_) {
     // 업로드 자체는 이미 끝난 뒤라 실패를 사용자에게 노출하지 않는다.
+    // 분석 시점 폴백(FittingJobController._resolveAttributes)이 나중에 채운다.
+  }
+}
+
+// 타임아웃 등 일시적 오류는 한 번 더 시도해본다.
+Future<ClothingAttributes> _extractAttributesWithRetry(
+  String imageUrl,
+  String category,
+) async {
+  try {
+    return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
+  } on TimeoutException {
+    return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
   }
 }
 
