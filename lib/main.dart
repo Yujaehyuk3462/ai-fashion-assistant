@@ -1,268 +1,76 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_app_check/firebase_app_check.dart';
-import 'constants/app_colors.dart';
-import 'models/wardrobe_item.dart';
+import 'package:provider/provider.dart';
+
+import 'state/app_state.dart';
+import 'theme/app_theme.dart';
+import 'widgets/fitting_chip.dart';
 import 'screens/login_screen.dart';
+import 'screens/onboarding_screen.dart';
+import 'screens/profile_summary_screen.dart';
 import 'screens/home_screen.dart';
-import 'screens/wardrobe_screen.dart';
-import 'screens/fitting_room_screen.dart';
-import 'screens/item_detail_screen.dart';
-import 'screens/settings_screen.dart';
-import 'services/fitting_job_controller.dart';
-import 'firebase_options.dart';
+import 'screens/fitting_screen.dart';
+import 'screens/closet_screen.dart';
+import 'screens/add_item_screen.dart';
+import 'screens/care_screen.dart';
+import 'screens/more_screen.dart';
+import 'screens/prefs_screen.dart';
+import 'screens/doc_screen.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
+void main() {
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AppState(),
+      child: const DotApp(),
+    ),
   );
-
-  await FirebaseAppCheck.instance.activate(
-    androidProvider: AndroidProvider.debug,
-    appleProvider: AppleProvider.debug,
-  );
-
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  runApp(const AiFashionAssistantApp());
 }
 
-class AiFashionAssistantApp extends StatelessWidget {
-  const AiFashionAssistantApp({super.key});
+class DotApp extends StatelessWidget {
+  const DotApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'StyleAI',
+      title: 'DOT',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.blue),
-        scaffoldBackgroundColor: AppColors.background,
-        useMaterial3: true,
-      ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              backgroundColor: AppColors.background,
-              body: Center(
-                child: CircularProgressIndicator(
-                    color: AppColors.navy, strokeWidth: 2),
-              ),
-            );
-          }
-          if (snapshot.hasData) return const AppShell();
-          return const LoginScreen();
-        },
-      ),
+      theme: AppTheme.light(),
+      home: const RootShell(),
     );
   }
 }
 
-class AppShell extends StatefulWidget {
-  const AppShell({super.key});
-
-  @override
-  State<AppShell> createState() => _AppShellState();
-}
-
-class _AppShellState extends State<AppShell> {
-  int _tabIndex = 0;
-  bool _showItemDetail = false;
-
-  // ── 피팅룸 아이템 상태 ──────────────────────────────────
-  final Map<String, WardrobeItem?> _fittingItems = {
-    '상의': null,
-    '하의': null,
-    '아우터': null,
-  };
-  WardrobeItem? _fittingUserPhoto; // 전신 사진
-
-  // AppShell(탭 전환에도 살아있는 레벨)에서 보관 → 다른 탭으로 이동해도
-  // 진행 중인 AI 분석/가상 피팅 작업과 결과가 유지된다.
-  final FittingJobController _fittingJob = FittingJobController();
-
-  @override
-  void dispose() {
-    _fittingJob.dispose();
-    super.dispose();
-  }
-
-  // 옷장 탭에서 선택 → 피팅룸 이동
-  void _sendToFittingRoom(WardrobeItem item) {
-    setState(() {
-      _fittingItems[item.category] = item;
-      _tabIndex = 2;
-    });
-  }
-
-  // 피팅룸 인라인: 슬롯에 아이템 설정
-  void _setFittingItem(String category, WardrobeItem item) {
-    setState(() => _fittingItems[category] = item);
-  }
-
-  // 피팅룸 인라인: 슬롯 비우기
-  void _clearFittingItem(String category) {
-    setState(() => _fittingItems[category] = null);
-  }
-
-  // 피팅룸 인라인: 전신 사진 설정
-  void _setFittingUserPhoto(WardrobeItem item) {
-    setState(() => _fittingUserPhoto = item);
-  }
-
-  // 피팅룸 인라인: 전신 사진 초기화
-  void _clearFittingUserPhoto() {
-    setState(() => _fittingUserPhoto = null);
-  }
-
-  void _navigateToDetail() => setState(() {
-        _showItemDetail = true;
-        _tabIndex = 2;
-      });
-
-  void _backFromDetail() => setState(() => _showItemDetail = false);
+/// 현재 뷰에 맞는 화면을 그리고, 전역 AI 피팅 칩을 오버레이한다.
+class RootShell extends StatelessWidget {
+  const RootShell({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+
+    final Widget screen = switch (app.view) {
+      AppView.login => const LoginScreen(),
+      AppView.onboarding => const OnboardingScreen(),
+      AppView.profile => const ProfileSummaryScreen(),
+      AppView.home => const HomeScreen(),
+      AppView.fitting => const FittingScreen(),
+      AppView.closet => const ClosetScreen(),
+      AppView.addItem => const AddItemScreen(),
+      AppView.care => const CareScreen(),
+      AppView.more => const MoreScreen(),
+      AppView.prefs => const PrefsScreen(),
+      AppView.doc => const DocScreen(),
+    };
+
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(child: _buildBody()),
-      bottomNavigationBar: _showItemDetail
-          ? null
-          : _BottomNav(
-              activeIndex: _tabIndex,
-              onTap: (i) => setState(() {
-                _tabIndex = i;
-                _showItemDetail = false;
-              }),
-            ),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_showItemDetail) return ItemDetailScreen(onBack: _backFromDetail);
-    switch (_tabIndex) {
-      case 0:
-        return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
-      case 1:
-        // 옷장: 아이템 선택 콜백 전달
-        return WardrobeScreen(onSelectItem: _sendToFittingRoom);
-      case 2:
-        return FittingRoomScreen(
-          jobController: _fittingJob,
-          selectedItems: Map.from(_fittingItems),
-          userPhoto: _fittingUserPhoto,
-          onSetItem: _setFittingItem,
-          onClearItem: _clearFittingItem,
-          onSetUserPhoto: _setFittingUserPhoto,
-          onClearUserPhoto: _clearFittingUserPhoto,
-          onNavigateToDetail: _navigateToDetail,
-        );
-      case 3:
-        return const SettingsScreen();
-      default:
-        return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
-    }
-  }
-}
-
-// ── 하단 네비게이션 바 ─────────────────────────────────────
-class _BottomNav extends StatelessWidget {
-  final int activeIndex;
-  final ValueChanged<int> onTap;
-
-  const _BottomNav({required this.activeIndex, required this.onTap});
-
-  static const _items = [
-    _NavItem(icon: Icons.home_outlined, activeIcon: Icons.home, label: '홈'),
-    _NavItem(
-        icon: Icons.checkroom_outlined,
-        activeIcon: Icons.checkroom,
-        label: '옷장'),
-    _NavItem(
-        icon: Icons.auto_awesome_outlined,
-        activeIcon: Icons.auto_awesome,
-        label: 'AI 피팅'),
-    _NavItem(
-        icon: Icons.settings_outlined,
-        activeIcon: Icons.settings,
-        label: '설정'),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.border)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Row(
-            children: List.generate(_items.length, (i) {
-              final item = _items[i];
-              final isActive = activeIndex == i;
-              return Expanded(
-                child: GestureDetector(
-                  onTap: () => onTap(i),
-                  behavior: HitTestBehavior.opaque,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: 48,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: isActive
-                              ? AppColors.bluePale
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Icon(
-                          isActive ? item.activeIcon : item.icon,
-                          color: isActive
-                              ? AppColors.blue
-                              : AppColors.textPlaceholder,
-                          size: 22,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        item.label,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight:
-                              isActive ? FontWeight.w700 : FontWeight.w500,
-                          color: isActive
-                              ? AppColors.blue
-                              : AppColors.textPlaceholder,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }),
-          ),
+      body: SafeArea(
+        bottom: false,
+        child: Stack(
+          children: [
+            Positioned.fill(child: screen),
+            if (app.showFitChip) const FittingChip(),
+          ],
         ),
       ),
     );
   }
-}
-
-class _NavItem {
-  final IconData icon;
-  final IconData activeIcon;
-  final String label;
-
-  const _NavItem(
-      {required this.icon, required this.activeIcon, required this.label});
 }
