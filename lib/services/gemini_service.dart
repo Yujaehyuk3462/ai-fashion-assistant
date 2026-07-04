@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../config/env.dart';
 import '../models/clothing_attributes.dart';
+import '../models/user_profile.dart';
 import 'gemini_api_exception.dart';
 
 class GeminiService {
@@ -132,20 +133,27 @@ class GeminiService {
   static Future<String> analyzeOutfitFromAttributes({
     required List<({String category, ClothingAttributes attributes})> items,
     String? userPhotoUrl,
+    UserProfile? userProfile,
   }) async {
     // 옷 이미지는 더 이상 보내지 않는다 — 등록 시점에 뽑아둔 색상/스타일/
     // 패턴/격식/핏/태그 텍스트만으로 매칭을 평가하므로 입력이 훨씬 가볍다.
+    // 사용자 체형 프로필이 입력되어 있으면 그 텍스트가 사진보다 정확하고
+    // 훨씬 빠르므로 우선하고, 이 경우 전신 사진은 아예 보내지 않는다.
+    final hasProfile = userProfile != null && userProfile.hasAnyData;
+
     final imageParts = <Map<String, dynamic>>[];
-    if (userPhotoUrl != null) {
+    if (!hasProfile && userPhotoUrl != null) {
       final bytes = await _downloadImageBytesCached(userPhotoUrl);
       imageParts.add({
         'inlineData': {'mimeType': 'image/jpeg', 'data': base64Encode(bytes)}
       });
     }
 
-    final prompt = userPhotoUrl != null
-        ? _buildAttributeAnalysisPromptWithPhoto(items)
-        : _buildAttributeAnalysisPrompt(items);
+    final prompt = hasProfile
+        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile)
+        : (userPhotoUrl != null
+            ? _buildAttributeAnalysisPromptWithPhoto(items)
+            : _buildAttributeAnalysisPrompt(items));
 
     final parts = <Map<String, dynamic>>[
       {'text': prompt},
@@ -175,6 +183,84 @@ class GeminiService {
     }
 
     return _extractTextFromResponse(response.body);
+  }
+
+  // ── 코디 텍스트 분석 (스트리밍) ──────────────────────────
+  // analyzeOutfitFromAttributes와 프롬프트/설정은 동일하되, SSE로 델타
+  // 텍스트를 그때그때 yield해 화면에 점진적으로 표시할 수 있게 한다.
+  static Stream<String> analyzeOutfitFromAttributesStream({
+    required List<({String category, ClothingAttributes attributes})> items,
+    String? userPhotoUrl,
+    UserProfile? userProfile,
+  }) async* {
+    final hasProfile = userProfile != null && userProfile.hasAnyData;
+
+    final imageParts = <Map<String, dynamic>>[];
+    if (!hasProfile && userPhotoUrl != null) {
+      final bytes = await _downloadImageBytesCached(userPhotoUrl);
+      imageParts.add({
+        'inlineData': {'mimeType': 'image/jpeg', 'data': base64Encode(bytes)}
+      });
+    }
+
+    final prompt = hasProfile
+        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile)
+        : (userPhotoUrl != null
+            ? _buildAttributeAnalysisPromptWithPhoto(items)
+            : _buildAttributeAnalysisPrompt(items));
+
+    final parts = <Map<String, dynamic>>[
+      {'text': prompt},
+      ...imageParts,
+    ];
+
+    final requestBody = jsonEncode({
+      'contents': [{'parts': parts}],
+      'generationConfig': {'temperature': 0.7, 'maxOutputTokens': 3000},
+    });
+
+    final request = http.Request(
+      'POST',
+      Uri.parse('$_baseUrl/models/$_textModel:streamGenerateContent?alt=sse&key=${Env.geminiApiKey}'),
+    )
+      ..headers['Content-Type'] = 'application/json'
+      // gzip 응답은 dart:io가 자동 압축 해제하면서 전체 바디를 다 받을 때까지
+      // 스트림을 버퍼링해버려 SSE 청크가 한꺼번에 도착한 것처럼 보이게 만든다.
+      // 압축을 아예 받지 않도록 요청해 진짜 점진적 스트리밍이 되게 한다.
+      ..headers['Accept-Encoding'] = 'identity'
+      ..body = requestBody;
+
+    final streamedResponse = await _client.send(request).timeout(const Duration(seconds: 60));
+
+    if (streamedResponse.statusCode != 200) {
+      final errorBody = await streamedResponse.stream.bytesToString();
+      final decoded = jsonDecode(errorBody);
+      final message = (decoded['error']?['message'] as String?) ?? '알 수 없는 오류';
+      throw GeminiApiException(streamedResponse.statusCode, message);
+    }
+
+    // 이벤트 사이 간격이 60초를 넘으면(응답이 멈춘 것으로 간주) 타임아웃시킨다.
+    // Stream.timeout은 이벤트가 올 때마다 타이머를 리셋하므로 전체 응답
+    // 길이와 무관하게 "멈춘 상태"만 감지한다.
+    final lines = streamedResponse.stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .timeout(const Duration(seconds: 60));
+
+    await for (final line in lines) {
+      if (!line.startsWith('data:')) continue;
+      final jsonStr = line.substring(5).trim();
+      if (jsonStr.isEmpty) continue;
+
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final candidates = data['candidates'] as List?;
+      if (candidates == null || candidates.isEmpty) continue;
+      final content = (candidates[0] as Map)['content'] as Map?;
+      final parts0 = content?['parts'] as List?;
+      if (parts0 == null || parts0.isEmpty) continue;
+      final text = (parts0[0] as Map)['text'] as String?;
+      if (text != null && text.isNotEmpty) yield text;
+    }
   }
 
   // ── 내부 공통 유틸 ─────────────────────────────────────────
@@ -295,6 +381,40 @@ $itemLines
 [점수] (현재 코디의 컬러 조합을 1~100점으로 평가한 숫자만 입력)
 
 1. 코디 분위기: 위 의류 조합이 이 착용자의 체형과 분위기에 얼마나 잘 어울리는지, 연출되는 스타일을 2~3문장으로 설명해 주세요.
+2. 신발 추천: 이 코디에 가장 잘 어울리는 신발을 종류와 색상을 포함해 2가지 추천해 주세요.
+3. 스타일링 팁: 전체 코디를 더욱 완성도 있게 만들 액세서리나 추가 아이템을 1~2가지 제안해 주세요.
+4. 다른 색상 추천: 현재 선택한 의류와 동일한 스타일이지만 더 높은 컬러 조합 점수를 받을 수 있는 색상 조합 2가지를 구체적으로 추천해 주세요. 각 추천마다 어떤 색상으로 바꾸면 좋은지, 왜 더 잘 어울리는지 설명해 주세요.
+
+[출력 형식 규칙 - 반드시 준수하세요]
+응답의 첫 번째 줄은 반드시 "[점수] 숫자" 형식으로만 시작해 주세요. 예시: [점수] 78
+별표(*), 샵(#), 대시(-) 등 어떠한 마크다운 기호도 절대 사용하지 마세요.
+이모지나 특수문자도 사용하지 마세요.
+1. 2. 3. 4. 숫자 번호와 일반 텍스트로만 깔끔하게 답변해 주세요.
+전체 답변은 각 항목당 지정된 문장 수를 넘기지 말고 간결하게 작성해 주세요.
+''';
+  }
+
+  static String _buildAttributeAnalysisPromptWithProfile(
+    List<({String category, ClothingAttributes attributes})> items,
+    UserProfile profile,
+  ) {
+    final itemLines = _itemsToPromptLines(items);
+    return '''
+당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
+
+착용자 정보(사용자가 직접 입력): ${profile.toPromptLine()}
+
+분석 대상은 아래 텍스트로 설명된 의류들입니다.
+
+$itemLines
+
+위 착용자 정보를 참고해서, 이 의류들이 착용자에게 얼마나 잘 어울릴지 평가해 주세요.
+
+아래 형식으로 정확히 답변해 주세요.
+
+[점수] (현재 코디의 컬러 조합을 1~100점으로 평가한 숫자만 입력)
+
+1. 코디 분위기: 위 의류 조합이 착용자 정보와 얼마나 잘 어울리는지, 연출되는 스타일을 2~3문장으로 설명해 주세요.
 2. 신발 추천: 이 코디에 가장 잘 어울리는 신발을 종류와 색상을 포함해 2가지 추천해 주세요.
 3. 스타일링 팁: 전체 코디를 더욱 완성도 있게 만들 액세서리나 추가 아이템을 1~2가지 제안해 주세요.
 4. 다른 색상 추천: 현재 선택한 의류와 동일한 스타일이지만 더 높은 컬러 조합 점수를 받을 수 있는 색상 조합 2가지를 구체적으로 추천해 주세요. 각 추천마다 어떤 색상으로 바꾸면 좋은지, 왜 더 잘 어울리는지 설명해 주세요.

@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../models/user_profile.dart';
+import '../services/firestore_service.dart';
+import 'body_profile_screen.dart';
 
 const _settingsGroups = [
   {
@@ -13,7 +17,7 @@ const _settingsGroups = [
     'title': '앱 설정',
     'items': [
       {'icon': Icons.dark_mode, 'label': '다크 모드', 'sub': '시스템 설정 따름'},
-      {'icon': Icons.smartphone, 'label': '체형 정보', 'sub': '170cm · 65kg · M사이즈'},
+      {'icon': Icons.smartphone, 'label': '체형 정보', 'sub': null}, // 실시간 프로필 데이터로 대체됨
     ],
   },
   {
@@ -25,8 +29,46 @@ const _settingsGroups = [
   },
 ];
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  UserProfile? _profile;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final profile = await FirestoreService.getUserProfileSilently(uid);
+    if (mounted) setState(() => _profile = profile);
+  }
+
+  String _bodyInfoSummary() {
+    final profile = _profile;
+    if (profile == null || !profile.hasAnyData) return '입력해 주세요';
+    final parts = <String>[];
+    if (profile.heightCm != null) parts.add('${profile.heightCm}cm');
+    if (profile.weightKg != null) parts.add('${profile.weightKg}kg');
+    if (profile.personalColor != null) parts.add(profile.personalColor!);
+    return parts.isEmpty ? '입력됨' : parts.join(' · ');
+  }
+
+  void _openBodyProfile() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const BodyProfileScreen()),
+    );
+    _loadProfile();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -117,11 +159,12 @@ class SettingsScreen extends StatelessWidget {
                 final item = items[i] as Map<String, dynamic>;
                 final icon = item['icon'] as IconData;
                 final label = item['label'] as String;
-                final sub = item['sub'] as String?;
+                final isBodyInfo = label == '체형 정보';
+                final sub = isBodyInfo ? _bodyInfoSummary() : item['sub'] as String?;
                 return Column(
                   children: [
                     InkWell(
-                      onTap: () {},
+                      onTap: isBodyInfo ? _openBodyProfile : () {},
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

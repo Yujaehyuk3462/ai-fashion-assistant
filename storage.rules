@@ -7,5 +7,11 @@ service firebase.storage {
     match /wardrobe_images/{fileName} {
       allow read, write: if request.auth != null;
     }
+
+    // storage_service.dart의 uploadFittingResult가 가상 피팅 캐시 이미지를
+    // fitting_results/{cacheKey}.jpg에 업로드/덮어쓰기한다.
+    match /fitting_results/{fileName} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

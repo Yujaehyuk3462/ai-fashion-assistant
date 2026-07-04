@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
@@ -91,6 +92,16 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
       widget.selectedItems.values.any((v) => v != null) &&
       !widget.jobController.isBusy;
 
+  // 분석 텍스트가 스트리밍으로 들어오기 시작하면 전체 화면 오버레이를 걷어내고
+  // 결과 카드가 실시간으로 채워지는 모습을 그대로 보여준다.
+  bool get _isStreamingAnalysis =>
+      widget.jobController.isAnalyzing &&
+      (widget.jobController.analysisResult?.isNotEmpty ?? false);
+
+  bool get _shouldBlockWithOverlay =>
+      (widget.jobController.isAnalyzing && !_isStreamingAnalysis) ||
+      widget.jobController.isGeneratingFitting;
+
   void _scrollToResult() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -111,6 +122,14 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
     setState(() => _mockFittingImageUrl = null);
 
+    // 체형 프로필이 입력되어 있으면 사진보다 우선해서 쓰므로(더 빠르고 정확),
+    // 분석 직전에 조회한다. 조회 실패는 조용히 null로 처리되어 기존 사진
+    // 기반 분석으로 자연스럽게 폴백된다.
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final userProfile =
+        uid != null ? await FirestoreService.getUserProfileSilently(uid) : null;
+    if (!mounted) return;
+
     // jobController.analyze()는 위젯과 무관하게 끝까지 실행되므로,
     // 이 화면을 벗어났다가 돌아와도 결과가 유지된다. 여기서의 await는
     // 스낵바 표시·자동 스크롤 같은 "이 화면이 떠 있을 때만" 필요한
@@ -118,6 +137,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     await widget.jobController.analyze(
       clothingItems: selectedList,
       userPhoto: userPhoto,
+      userProfile: userProfile,
     );
     if (!mounted) return;
 
@@ -140,7 +160,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   }
 
   // ── Gemini 가상 피팅 이미지 생성 ─────────────────────────
-  Future<void> _generateFitting() async {
+  Future<void> _generateFitting({bool forceRegenerate = false}) async {
     if (!_canGenerateFitting) return;
     final selectedList = widget.selectedItems.values.whereType<WardrobeItem>().toList();
     final userPhoto = widget.userPhoto!;
@@ -148,6 +168,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     await widget.jobController.generateFitting(
       userPhoto: userPhoto,
       clothingItems: selectedList,
+      forceRegenerate: forceRegenerate,
     );
     if (!mounted) return;
 
@@ -234,7 +255,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     _buildActionButtons(),
                     const SizedBox(height: 20),
                     (widget.jobController.analysisResult != null ||
-                            widget.jobController.fittingImage != null)
+                            widget.jobController.fittingImage != null ||
+                            widget.jobController.fittingImageUrl != null)
                         ? _buildResultCard()
                         : _buildResultPlaceholder(),
                   ],
@@ -243,8 +265,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
             ),
           ],
         ),
-        if (widget.jobController.isAnalyzing || widget.jobController.isGeneratingFitting)
-          _buildAnalyzingOverlay(isFitting: widget.jobController.isGeneratingFitting),
+        if (_shouldBlockWithOverlay) _buildAnalyzingOverlay(isFitting: widget.jobController.isGeneratingFitting),
       ],
     );
   }
@@ -714,15 +735,17 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   // ── 전체 화면 이미지 뷰어 ────────────────────────────────
   void _openFullScreenImage() {
     final fittingImage = widget.jobController.fittingImage;
-    if (fittingImage == null && _mockFittingImageUrl == null) return;
+    final fittingImageUrl = widget.jobController.fittingImageUrl;
+    final hasRealResult = fittingImage != null || fittingImageUrl != null;
+    if (!hasRealResult && _mockFittingImageUrl == null) return;
     Navigator.of(context).push(
       PageRouteBuilder(
         opaque: false,
         barrierColor: Colors.black,
         pageBuilder: (_, __, ___) => _FullScreenImageViewer(
           imageBytes: fittingImage,
-          imageUrl: fittingImage == null ? _mockFittingImageUrl : null,
-          label: fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+          imageUrl: fittingImage == null ? (fittingImageUrl ?? _mockFittingImageUrl) : null,
+          label: hasRealResult ? 'AI 합성 피팅' : '내 사진 기반 피팅',
         ),
       ),
     );
@@ -731,6 +754,9 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   // ── 분석 완료 결과 카드 ──────────────────────────────────
   Widget _buildResultCard() {
     final fittingImage = widget.jobController.fittingImage;
+    final fittingImageUrl = widget.jobController.fittingImageUrl;
+    final isFittingFromCache = widget.jobController.isFittingFromCache;
+    final hasRealFittingResult = fittingImage != null || fittingImageUrl != null;
     final analysisResult = widget.jobController.analysisResult;
     return Container(
       width: double.infinity,
@@ -749,7 +775,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 피팅 이미지 영역 — 이미지가 있을 때만 표시
-          if (fittingImage != null || _mockFittingImageUrl != null)
+          if (hasRealFittingResult || _mockFittingImageUrl != null)
             GestureDetector(
               onTap: _openFullScreenImage,
               child: ClipRRect(
@@ -765,7 +791,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       )
                     else
                       CachedNetworkImage(
-                        imageUrl: _mockFittingImageUrl!,
+                        imageUrl: fittingImageUrl ?? _mockFittingImageUrl!,
                         width: double.infinity,
                         height: 320,
                         fit: BoxFit.cover,
@@ -784,25 +810,51 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     Positioned(
                       top: 14,
                       left: 14,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                            color: AppColors.navy.withValues(alpha: 0.88),
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
-                            const SizedBox(width: 5),
-                            Text(
-                              fittingImage != null ? 'AI 합성 피팅' : '내 사진 기반 피팅',
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                                color: AppColors.navy.withValues(alpha: 0.88),
+                                borderRadius: BorderRadius.circular(8)),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
+                                const SizedBox(width: 5),
+                                Text(
+                                  hasRealFittingResult ? 'AI 합성 피팅' : '내 사진 기반 피팅',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isFittingFromCache) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.5),
+                                  borderRadius: BorderRadius.circular(8)),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.save_outlined, color: Colors.white, size: 12),
+                                  SizedBox(width: 5),
+                                  Text('저장된 결과',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700)),
+                                ],
+                              ),
                             ),
                           ],
-                        ),
+                        ],
                       ),
                     ),
                     Positioned(
@@ -835,6 +887,33 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       ),
                     ),
                   ],
+                ),
+              ),
+            ),
+          // 캐시된 결과일 때 강제로 새로 생성할 수 있는 버튼
+          if (isFittingFromCache)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+              child: GestureDetector(
+                onTap: () => _generateFitting(forceRegenerate: true),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.border)),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.refresh, color: AppColors.textMuted, size: 15),
+                      SizedBox(width: 6),
+                      Text('새로 생성하기',
+                          style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -951,6 +1030,24 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                           color: AppColors.textSecondary,
                           fontSize: 14,
                           height: 1.8)),
+                  if (_isStreamingAnalysis) ...[
+                    const SizedBox(height: 10),
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                              color: AppColors.textDisabled, strokeWidth: 1.5),
+                        ),
+                        SizedBox(width: 6),
+                        Text('작성 중...',
+                            style: TextStyle(
+                                color: AppColors.textDisabled, fontSize: 11)),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 20),
                   Row(
                     children: [
