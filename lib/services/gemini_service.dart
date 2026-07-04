@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../config/env.dart';
 import '../models/clothing_attributes.dart';
+import '../models/clothing_size.dart';
 import '../models/user_profile.dart';
 import 'gemini_api_exception.dart';
 
@@ -110,6 +111,71 @@ class GeminiService {
 
     final text = _extractTextFromResponse(response.body);
     return ClothingAttributes.fromJson(_parseJsonObject(text));
+  }
+
+  // ── 사이즈표 사진 한 장 → 특정 사이즈 행의 치수 추출 ──
+  // Storage에 업로드된 옷 사진이 아니라 사용자가 그 자리에서 찍은/고른
+  // 사이즈표 사진의 바이트를 바로 받는다 — 저장할 필요 없는 1회성 OCR
+  // 입력이라 URL 다운로드 경로(_downloadImageBytesCached)를 타지 않는다.
+  static Future<ClothingSize> extractSizeFromChart({
+    required Uint8List imageBytes,
+    required String category,
+    required String sizeLabel,
+  }) async {
+    final parts = <Map<String, dynamic>>[
+      {'text': _buildSizeChartExtractionPrompt(category: category, sizeLabel: sizeLabel)},
+      {'inlineData': {'mimeType': 'image/jpeg', 'data': base64Encode(imageBytes)}},
+    ];
+
+    final requestBody = jsonEncode({
+      'contents': [{'parts': parts}],
+      'generationConfig': {
+        'temperature': 0.1,
+        'maxOutputTokens': 500,
+        'responseMimeType': 'application/json',
+        // extractAttributes와 동일한 이유로 thinking을 꺼서 예산이
+        // JSON 출력 전에 잘려나가는 것을 방지한다.
+        'thinkingConfig': {'thinkingBudget': 0},
+      },
+    });
+
+    final response = await _client
+        .post(
+          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
+          headers: {'Content-Type': 'application/json'},
+          body: requestBody,
+        )
+        .timeout(const Duration(seconds: 60));
+
+    if (response.statusCode != 200) {
+      final errorBody = jsonDecode(response.body);
+      final message = (errorBody['error']?['message'] as String?) ?? '알 수 없는 오류';
+      throw GeminiApiException(response.statusCode, message);
+    }
+
+    final text = _extractTextFromResponse(response.body);
+    return ClothingSize.fromJson(_parseJsonObject(text));
+  }
+
+  static String _buildSizeChartExtractionPrompt({
+    required String category,
+    required String sizeLabel,
+  }) {
+    final fields = category == '하의'
+        ? '"waistWidth": 허리단면(cm), "hipWidth": 엉덩이단면(cm), "thighWidth": 허벅지단면(cm), "pantsLength": 총장(cm)'
+        : '"totalLength": 총장(cm), "shoulderWidth": 어깨너비(cm), "chestWidth": 가슴단면(cm), "sleeveLength": 소매길이(cm)';
+    return '''
+아래는 의류 사이즈표 이미지입니다. 이 표에서 사이즈가 정확히 "$sizeLabel"인 행 하나만 찾아
+그 행의 치수 숫자만 JSON으로 추출하세요. 다른 사이즈 행의 값을 섞어 쓰지 마세요.
+숫자를 읽는 것 외에 어떤 판단이나 설명, 핏 평가도 하지 마세요.
+표에 "$sizeLabel" 사이즈가 없거나 특정 항목을 읽을 수 없으면 해당 값은 null로 두세요.
+단위가 cm가 아니라 인치 등으로 표기되어 있다면 cm로 환산해서 반환하세요.
+
+응답은 반드시 '{' 문자로 즉시 시작해야 합니다. "Here is the JSON" 같은 설명 문구,
+마크다운, 코드블록을 절대 앞에 붙이지 마세요. 순수 JSON 객체만 출력하세요.
+
+형식: {$fields}
+''';
   }
 
   // responseMimeType: application/json을 지정해도 모델이 종종

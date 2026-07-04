@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
@@ -8,6 +9,7 @@ import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
+import '../services/gemini_api_exception.dart';
 import '../services/gemini_service.dart';
 import '../services/storage_service.dart';
 
@@ -38,6 +40,35 @@ Future<ClothingAttributes> _extractAttributesWithRetry(
     return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
   } on TimeoutException {
     return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
+  }
+}
+
+// 사이즈표 OCR도 타임아웃/503·429 같은 일시적 오류는 한 번 더 시도해보고,
+// 그래도 실패하면 그대로 던져서 호출부가 손 입력 폴백으로 안내하게 한다.
+Future<ClothingSize> _scanSizeChartWithRetry({
+  required Uint8List imageBytes,
+  required String category,
+  required String sizeLabel,
+}) async {
+  try {
+    return await GeminiService.extractSizeFromChart(
+      imageBytes: imageBytes,
+      category: category,
+      sizeLabel: sizeLabel,
+    );
+  } on TimeoutException {
+    return await GeminiService.extractSizeFromChart(
+      imageBytes: imageBytes,
+      category: category,
+      sizeLabel: sizeLabel,
+    );
+  } on GeminiApiException catch (e) {
+    if (!e.isRetryable) rethrow;
+    return await GeminiService.extractSizeFromChart(
+      imageBytes: imageBytes,
+      category: category,
+      sizeLabel: sizeLabel,
+    );
   }
 }
 
@@ -730,6 +761,7 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
 
   late final _fields = widget.category == '하의' ? _bottomFields : _topFields;
   final _controllers = <String, TextEditingController>{};
+  bool _isScanning = false;
 
   @override
   void initState() {
@@ -765,6 +797,100 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
       pantsLength: _parse('pantsLength'),
     );
     Navigator.pop(context, size.hasAnyData ? size : null);
+  }
+
+  // 사이즈표 캡처 → 사이즈 행 선택 → 촬영/선택 → OCR → 필드 자동 채움.
+  // 실패해도 필드는 비어있는 채로 남아 손 입력으로 자연스럽게 폴백된다.
+  Future<void> _scanSizeChart() async {
+    final sizeLabel = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _SizeLabelPickerSheet(),
+    );
+    if (sizeLabel == null || !mounted) return;
+
+    final source = await _pickImageSourceChoice(context);
+    if (source == null || !mounted) return;
+
+    final xFile = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 85,
+      maxWidth: 1600,
+      maxHeight: 1600,
+    );
+    if (xFile == null || !mounted) return;
+
+    setState(() => _isScanning = true);
+    try {
+      final bytes = await xFile.readAsBytes();
+      final result = await _scanSizeChartWithRetry(
+        imageBytes: bytes,
+        category: widget.category,
+        sizeLabel: sizeLabel,
+      );
+      if (!mounted) return;
+      _applyScannedSize(result);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(result.hasAnyData
+            ? 'AI가 읽은 값이에요. 확인 후 저장해 주세요.'
+            : '사이즈표에서 인식된 값이 없어요. 사진을 다시 확인하거나 직접 입력해 주세요.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('자동 인식 실패: 직접 입력해 주세요. ($e)'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.red,
+      ));
+    } finally {
+      if (mounted) setState(() => _isScanning = false);
+    }
+  }
+
+  void _applyScannedSize(ClothingSize size) {
+    void set(String key, double? value) {
+      _controllers[key]?.text = value?.toString() ?? '';
+    }
+
+    set('totalLength', size.totalLength);
+    set('shoulderWidth', size.shoulderWidth);
+    set('chestWidth', size.chestWidth);
+    set('sleeveLength', size.sleeveLength);
+    set('waistWidth', size.waistWidth);
+    set('hipWidth', size.hipWidth);
+    set('thighWidth', size.thighWidth);
+    set('pantsLength', size.pantsLength);
+  }
+
+  Future<ImageSource?> _pickImageSourceChoice(BuildContext context) {
+    return showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined, color: AppColors.navy),
+              title: const Text('카메라로 촬영'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: AppColors.navy),
+              title: const Text('갤러리에서 선택'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -808,6 +934,38 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
               const Text(
                 '무신사 사이즈표를 참고해 입력하면 체형과 비교한 예상 핏을 보여드려요',
                 style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              GestureDetector(
+                onTap: _isScanning ? null : _scanSizeChart,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppColors.bluePale,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.blue.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (_isScanning)
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(color: AppColors.blue, strokeWidth: 2),
+                        )
+                      else
+                        const Icon(Icons.document_scanner_outlined, color: AppColors.blue, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        _isScanning ? 'AI가 사이즈표를 읽는 중...' : '사이즈표 캡처로 자동 입력',
+                        style: const TextStyle(
+                            color: AppColors.blue, fontSize: 13, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 20),
               ..._fields.map((f) => Padding(
@@ -860,6 +1018,131 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
                 ],
               ),
             ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── 사이즈표 OCR용 사이즈 행 선택 바텀시트 ───────────────
+class _SizeLabelPickerSheet extends StatefulWidget {
+  const _SizeLabelPickerSheet();
+
+  @override
+  State<_SizeLabelPickerSheet> createState() => _SizeLabelPickerSheetState();
+}
+
+class _SizeLabelPickerSheetState extends State<_SizeLabelPickerSheet> {
+  static const _quickLabels = ['S', 'M', 'L', 'XL', 'XXL'];
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final label = _controller.text.trim();
+    if (label.isEmpty) return;
+    Navigator.pop(context, label);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  '어떤 사이즈 행을 읽을까요?',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '사이즈표에서 이 옷에 해당하는 사이즈를 알려주세요',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _quickLabels.map((label) {
+                    final isSelected = _controller.text == label;
+                    return ChoiceChip(
+                      label: Text(label),
+                      selected: isSelected,
+                      onSelected: (_) => setState(() => _controller.text = label),
+                      selectedColor: AppColors.bluePale,
+                      labelStyle: TextStyle(
+                          color: isSelected ? AppColors.blue : AppColors.textSecondary,
+                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500),
+                      backgroundColor: AppColors.background,
+                      side: BorderSide(color: isSelected ? AppColors.blue : AppColors.border),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _controller,
+                  decoration: InputDecoration(
+                    hintText: '예: L, 100, Free',
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 20),
+                GestureDetector(
+                  onTap: _submit,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: AppColors.navy,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      '다음: 사진 선택',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
