@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
+import '../services/fit_predictor.dart';
 import '../services/fitting_job_controller.dart';
 
 class FittingRoomScreen extends StatefulWidget {
@@ -37,12 +39,24 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   String? _mockFittingImageUrl;
   final ScrollController _scrollController = ScrollController();
 
+  // 핏 예측용 체형 프로필 — Gemini 호출과 무관하게 로컬 계산만으로
+  // 쓰이므로, 코디 분석 버튼과 상관없이 화면 진입 시 바로 불러온다.
+  UserProfile? _userProfile;
+
   @override
   void initState() {
     super.initState();
     // 컨트롤러는 AppShell 레벨에서 살아있으므로, 다른 탭에 있는 동안
     // 완료된 작업 결과도 여기서 리스너를 통해 그대로 반영된다.
     widget.jobController.addListener(_onJobChanged);
+    _loadUserProfile();
+  }
+
+  Future<void> _loadUserProfile() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final profile = await FirestoreService.getUserProfileSilently(uid);
+    if (mounted) setState(() => _userProfile = profile);
   }
 
   @override
@@ -251,6 +265,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
                       child: _buildClothingSection(),
                     ),
+                    const SizedBox(height: 16),
+                    _buildFitPreview(),
                     const SizedBox(height: 24),
                     _buildActionButtons(),
                     const SizedBox(height: 20),
@@ -612,6 +628,102 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
         ],
       ),
     );
+  }
+
+  // ── 예상 핏 (규칙 기반, 숫자 비교만 — Gemini 호출 없음) ──
+  // 옷 치수와 체형 프로필을 대조한 결과일 뿐이므로 선택된 아이템이
+  // 바뀌는 즉시(코디 분석 버튼을 누르기 전에도) 바로 반영된다.
+  Widget _buildFitPreview() {
+    final entries = widget.selectedItems.entries
+        .where((e) => e.value != null)
+        .map((e) => (category: e.key, item: e.value!))
+        .toList();
+    if (entries.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: AppColors.navy.withValues(alpha: 0.07),
+              blurRadius: 12,
+              offset: const Offset(0, 2))
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.straighten, color: AppColors.navy, size: 16),
+              const SizedBox(width: 6),
+              const Text('예상 핏',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700)),
+              const Spacer(),
+              const Text('실측 기준 아님 · 참고용',
+                  style: TextStyle(color: AppColors.textPlaceholder, fontSize: 11)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ...entries.map((e) {
+            final result = FitPredictor.predict(
+              category: e.category,
+              size: e.item.size,
+              profile: _userProfile,
+            );
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 44,
+                    child: Text(e.category,
+                        style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                  Expanded(
+                    child: Text(
+                      result != null ? result.label : '정보 부족으로 예측 불가',
+                      style: TextStyle(
+                        color: result != null
+                            ? _fitColor(result.level)
+                            : AppColors.textDisabled,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (result != null)
+                    Text(
+                      '여유분 ${result.easeCm >= 0 ? '+' : ''}${result.easeCm.toStringAsFixed(1)}cm',
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+                    ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Color _fitColor(FitLevel level) {
+    switch (level) {
+      case FitLevel.tight:
+        return AppColors.red;
+      case FitLevel.regular:
+        return AppColors.greenDark;
+      case FitLevel.oversized:
+        return AppColors.blue;
+    }
   }
 
   // ── 액션 버튼 영역 (분석 + 가상 피팅) ───────────────────

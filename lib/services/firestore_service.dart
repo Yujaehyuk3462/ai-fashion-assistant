@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/clothing_attributes.dart';
+import '../models/clothing_size.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 
@@ -24,11 +25,13 @@ class FirestoreService {
   static Future<String> addWardrobeItem({
     required String imageUrl,
     required String category,
+    ClothingSize? size,
   }) async {
     final doc = await _db.collection(_wardrobeCol).add({
       'imageUrl': imageUrl,
       'category': category,
       'createdAt': FieldValue.serverTimestamp(),
+      if (size != null) 'size': size.toFirestore(),
     });
     return doc.id;
   }

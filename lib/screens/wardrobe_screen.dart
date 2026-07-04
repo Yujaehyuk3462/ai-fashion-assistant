@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
 import '../models/clothing_attributes.dart';
+import '../models/clothing_size.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 import '../services/gemini_service.dart';
@@ -242,12 +243,25 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     );
     if (category == null || !mounted) return;
 
+    // 치수 입력(선택) — 전신 사진은 핏 예측 대상이 아니므로 건너뛴다.
+    ClothingSize? size;
+    if (category != '전신') {
+      size = await showModalBottomSheet<ClothingSize>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _SizeInputSheet(category: category),
+      );
+      if (!mounted) return;
+    }
+
     setState(() => _isUploading = true);
     try {
       final imageUrl = await StorageService.uploadWardrobeImage(xFile);
       final itemId = await FirestoreService.addWardrobeItem(
         imageUrl: imageUrl,
         category: category,
+        size: size,
       );
       // 속성 추출은 업로드 완료를 기다리게 하지 않고 백그라운드로 흘려보낸다.
       unawaited(_extractAndCacheAttributes(itemId, imageUrl, category));
@@ -684,6 +698,170 @@ class _CategoryPickerSheet extends StatelessWidget {
             }),
             const SizedBox(height: 8),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── 치수 입력 바텀시트 (선택) ─────────────────────────────
+class _SizeInputSheet extends StatefulWidget {
+  final String category;
+
+  const _SizeInputSheet({required this.category});
+
+  @override
+  State<_SizeInputSheet> createState() => _SizeInputSheetState();
+}
+
+class _SizeInputSheetState extends State<_SizeInputSheet> {
+  static const _bottomFields = [
+    (key: 'waistWidth', label: '허리단면'),
+    (key: 'hipWidth', label: '엉덩이단면'),
+    (key: 'thighWidth', label: '허벅지단면'),
+    (key: 'pantsLength', label: '총장'),
+  ];
+  static const _topFields = [
+    (key: 'totalLength', label: '총장'),
+    (key: 'shoulderWidth', label: '어깨너비'),
+    (key: 'chestWidth', label: '가슴단면'),
+    (key: 'sleeveLength', label: '소매길이'),
+  ];
+
+  late final _fields = widget.category == '하의' ? _bottomFields : _topFields;
+  final _controllers = <String, TextEditingController>{};
+
+  @override
+  void initState() {
+    super.initState();
+    for (final f in _fields) {
+      _controllers[f.key] = TextEditingController();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in _controllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  double? _parse(String key) {
+    final text = _controllers[key]?.text.trim();
+    if (text == null || text.isEmpty) return null;
+    return double.tryParse(text);
+  }
+
+  void _submit() {
+    final size = ClothingSize(
+      totalLength: _parse('totalLength'),
+      shoulderWidth: _parse('shoulderWidth'),
+      chestWidth: _parse('chestWidth'),
+      sleeveLength: _parse('sleeveLength'),
+      waistWidth: _parse('waistWidth'),
+      hipWidth: _parse('hipWidth'),
+      thighWidth: _parse('thighWidth'),
+      pantsLength: _parse('pantsLength'),
+    );
+    Navigator.pop(context, size.hasAnyData ? size : null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                '치수 입력 (선택)',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '무신사 사이즈표를 참고해 입력하면 체형과 비교한 예상 핏을 보여드려요',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              ..._fields.map((f) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: TextField(
+                      controller: _controllers[f.key],
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                        labelText: '${f.label} (cm)',
+                        isDense: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: AppColors.border),
+                        ),
+                      ),
+                    ),
+                  )),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context, null),
+                      child: const Text('건너뛰기',
+                          style: TextStyle(
+                              color: AppColors.textMuted, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _submit,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        decoration: BoxDecoration(
+                          color: AppColors.navy,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Text(
+                          '완료',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            ),
+          ),
         ),
       ),
     );

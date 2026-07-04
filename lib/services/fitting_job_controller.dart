@@ -39,20 +39,31 @@ class FittingJobController extends ChangeNotifier {
     analysisError = null;
     notifyListeners();
 
+    final debugT0 = DateTime.now();
     try {
       final itemsWithAttributes = await _resolveAttributes(clothingItems);
+      final debugT1 = DateTime.now();
+      debugPrint('[TIMING] 1) 속성 준비: ${debugT1.difference(debugT0).inMilliseconds}ms');
 
       try {
         final buffer = StringBuffer();
+        DateTime? debugFirstChunkAt;
         await for (final chunk in GeminiService.analyzeOutfitFromAttributesStream(
           items: itemsWithAttributes,
           userPhotoUrl: userPhoto?.imageUrl,
           userProfile: userProfile,
         )) {
+          debugFirstChunkAt ??= DateTime.now();
           buffer.write(chunk);
           analysisResult = buffer.toString();
           notifyListeners();
         }
+        final debugT2 = DateTime.now();
+        debugPrint('[TIMING] 2) 첫 응답까지: '
+            '${(debugFirstChunkAt ?? debugT2).difference(debugT1).inMilliseconds}ms');
+        debugPrint('[TIMING] 3) 전체 생성 완료: '
+            '${debugT2.difference(debugT1).inMilliseconds}ms '
+            '(총합 ${debugT2.difference(debugT0).inMilliseconds}ms)');
         if (buffer.isEmpty) throw Exception('스트리밍 응답이 비어 있습니다.');
       } catch (_) {
         // 스트리밍이 중간에 끊기거나 실패하면 부분 텍스트는 버리고
