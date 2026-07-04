@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
 import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
+import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
+import '../services/fit_predictor.dart';
 import '../services/firestore_service.dart';
 import '../services/gemini_api_exception.dart';
 import '../services/gemini_service.dart';
@@ -85,14 +88,30 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   String _activeCategory = '전체';
   bool _isUploading = false;
 
+  // 카드 뱃지용 핏 예측에 쓰인다 — Gemini 호출 없이 로컬 계산만 하므로
+  // 화면 진입 시 한 번만 불러오면 충분하다.
+  UserProfile? _userProfile;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserProfile();
+  }
+
+  Future<void> _loadUserProfile() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final profile = await FirestoreService.getUserProfileSilently(uid);
+    if (mounted) setState(() => _userProfile = profile);
+  }
+
   List<WardrobeItem> _filter(List<WardrobeItem> all) {
     if (_activeCategory == '전체') return all;
     return all.where((item) => item.category == _activeCategory).toList();
   }
 
-  // ── 카드 탭: 피팅룸 전송 액션 시트 ──────────────────────
+  // ── 카드 탭: 피팅룸 전송 · 치수 입력/수정 액션 시트 ─────
   void _showCardOptions(BuildContext context, WardrobeItem item) {
-    if (widget.onSelectItem == null) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
@@ -142,40 +161,107 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                 ],
               ),
               const SizedBox(height: 20),
-              GestureDetector(
-                onTap: () {
-                  Navigator.pop(context);
-                  widget.onSelectItem!(item);
-                },
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: AppColors.navy,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.checkroom, color: Colors.white, size: 18),
-                      SizedBox(width: 8),
-                      Text(
-                        '피팅룸에서 입어보기',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
+              if (widget.onSelectItem != null) ...[
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context);
+                    widget.onSelectItem!(item);
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.navy,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.checkroom, color: Colors.white, size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          '피팅룸에서 입어보기',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
+                const SizedBox(height: 10),
+              ],
+              if (item.category != '전신')
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context);
+                    _editSize(item);
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.straighten, color: AppColors.navy, size: 18),
+                        const SizedBox(width: 8),
+                        Text(
+                          item.size != null ? '치수 수정' : '치수 입력',
+                          style: const TextStyle(
+                            color: AppColors.navy,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  // ── 등록된 옷의 치수를 나중에 입력하거나 수정 ────────────
+  Future<void> _editSize(WardrobeItem item) async {
+    final size = await showModalBottomSheet<ClothingSize>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SizeInputSheet(
+        category: item.category,
+        initialSize: item.size,
+        isEditingExisting: true,
+      ),
+    );
+    if (size == null || !mounted) return;
+
+    try {
+      await FirestoreService.updateWardrobeSize(item.id, size);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('치수를 저장했습니다.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('저장 실패: $e'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.red,
+        ));
+      }
+    }
   }
 
   // ── 아이템 삭제 확인 ─────────────────────────────────────
@@ -356,11 +442,10 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                               ),
                               itemCount: items.length,
                               itemBuilder: (ctx, i) => GestureDetector(
-                                onTap: widget.onSelectItem != null
-                                    ? () => _showCardOptions(ctx, items[i])
-                                    : null,
+                                onTap: () => _showCardOptions(ctx, items[i]),
                                 child: _WardrobeCard(
                                   item: items[i],
+                                  userProfile: _userProfile,
                                   onDelete: () => _confirmDelete(items[i]),
                                 ),
                               ),
@@ -738,8 +823,14 @@ class _CategoryPickerSheet extends StatelessWidget {
 // ── 치수 입력 바텀시트 (선택) ─────────────────────────────
 class _SizeInputSheet extends StatefulWidget {
   final String category;
+  final ClothingSize? initialSize; // 이미 등록된 옷의 치수 수정 시 미리 채울 값
+  final bool isEditingExisting; // true면 "치수 수정" 문구, false면 등록 흐름의 "치수 입력(선택)"
 
-  const _SizeInputSheet({required this.category});
+  const _SizeInputSheet({
+    required this.category,
+    this.initialSize,
+    this.isEditingExisting = false,
+  });
 
   @override
   State<_SizeInputSheet> createState() => _SizeInputSheetState();
@@ -769,6 +860,8 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
     for (final f in _fields) {
       _controllers[f.key] = TextEditingController();
     }
+    final initial = widget.initialSize;
+    if (initial != null) _fillControllers(initial);
   }
 
   @override
@@ -830,7 +923,7 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
         sizeLabel: sizeLabel,
       );
       if (!mounted) return;
-      _applyScannedSize(result);
+      _fillControllers(result);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(result.hasAnyData
             ? 'AI가 읽은 값이에요. 확인 후 저장해 주세요.'
@@ -849,7 +942,7 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
     }
   }
 
-  void _applyScannedSize(ClothingSize size) {
+  void _fillControllers(ClothingSize size) {
     void set(String key, double? value) {
       _controllers[key]?.text = value?.toString() ?? '';
     }
@@ -921,9 +1014,9 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
                 ),
               ),
               const SizedBox(height: 20),
-              const Text(
-                '치수 입력 (선택)',
-                style: TextStyle(
+              Text(
+                widget.isEditingExisting ? '치수 수정' : '치수 입력 (선택)',
+                style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
@@ -989,8 +1082,8 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
                   Expanded(
                     child: TextButton(
                       onPressed: () => Navigator.pop(context, null),
-                      child: const Text('건너뛰기',
-                          style: TextStyle(
+                      child: Text(widget.isEditingExisting ? '취소' : '건너뛰기',
+                          style: const TextStyle(
                               color: AppColors.textMuted, fontWeight: FontWeight.w600)),
                     ),
                   ),
@@ -1266,15 +1359,32 @@ class _ErrorView extends StatelessWidget {
 // ── 옷장 카드 ─────────────────────────────────────────
 class _WardrobeCard extends StatelessWidget {
   final WardrobeItem item;
+  final UserProfile? userProfile;
   final VoidCallback onDelete;
 
-  const _WardrobeCard({required this.item, required this.onDelete});
+  const _WardrobeCard({required this.item, required this.userProfile, required this.onDelete});
 
   String _formatDate(DateTime dt) =>
       '${dt.year}.${dt.month.toString().padLeft(2, '0')}.${dt.day.toString().padLeft(2, '0')}';
 
+  Color _fitColor(FitLevel level) {
+    switch (level) {
+      case FitLevel.tight:
+        return AppColors.red;
+      case FitLevel.regular:
+        return AppColors.greenDark;
+      case FitLevel.oversized:
+        return AppColors.blue;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final fitResult = FitPredictor.predict(
+      category: item.category,
+      size: item.size,
+      profile: userProfile,
+    );
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -1352,25 +1462,49 @@ class _WardrobeCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 11, 12, 13),
-            child: Column(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  item.category,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.category,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _formatDate(item.createdAt),
+                        style: const TextStyle(
+                          color: AppColors.textPlaceholder,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  _formatDate(item.createdAt),
-                  style: const TextStyle(
-                    color: AppColors.textPlaceholder,
-                    fontSize: 11,
+                if (fitResult != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: _fitColor(fitResult.level).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: _fitColor(fitResult.level).withValues(alpha: 0.3)),
+                    ),
+                    child: Text(
+                      fitResult.label,
+                      style: TextStyle(
+                        color: _fitColor(fitResult.level),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ),
               ],
             ),
           ),

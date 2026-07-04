@@ -46,6 +46,13 @@ class FirestoreService {
     });
   }
 
+  // 이미 등록된 옷에 치수를 나중에 입력하거나 기존 치수를 수정할 때 사용.
+  static Future<void> updateWardrobeSize(String id, ClothingSize size) async {
+    await _db.collection(_wardrobeCol).doc(id).update({
+      'size': size.toFirestore(),
+    });
+  }
+
   // TODO: 옷/사용자 사진이 삭제될 때 해당 아이템이 포함된 fitting_cache
   // 문서와 Storage의 결과 이미지를 함께 정리하는 로직 필요 (현재 범위 밖 —
   // 지금은 삭제해도 캐시가 orphan으로 남아 낡은 조합을 계속 가리킬 수 있다).
