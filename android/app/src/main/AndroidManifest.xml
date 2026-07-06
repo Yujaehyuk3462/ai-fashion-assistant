@@ -36,6 +36,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- image_cropper(uCrop) 크롭 화면 -->
+        <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
         <!-- Impeller 비활성화: x86_64 에뮬레이터의 OpenGLES 충돌 방지 -->
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"

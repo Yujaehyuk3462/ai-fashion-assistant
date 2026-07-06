@@ -9,6 +9,7 @@ import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
+import 'screens/coord_board_screen.dart';
 import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/fitting_job_controller.dart';
@@ -164,6 +165,8 @@ class _AppShellState extends State<AppShell> {
           onNavigateToDetail: _navigateToDetail,
         );
       case 3:
+        return const CoordBoardScreen();
+      case 4:
         return const SettingsScreen();
       default:
         return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
@@ -188,6 +191,10 @@ class _BottomNav extends StatelessWidget {
         icon: Icons.auto_awesome_outlined,
         activeIcon: Icons.auto_awesome,
         label: 'AI 피팅'),
+    _NavItem(
+        icon: Icons.dashboard_customize_outlined,
+        activeIcon: Icons.dashboard_customize,
+        label: '코디보드'),
     _NavItem(
         icon: Icons.settings_outlined,
         activeIcon: Icons.settings,

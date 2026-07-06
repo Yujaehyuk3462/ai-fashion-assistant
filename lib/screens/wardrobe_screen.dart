@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:image_background_remover/image_background_remover.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
@@ -16,7 +19,11 @@ import '../services/gemini_api_exception.dart';
 import '../services/gemini_service.dart';
 import '../services/storage_service.dart';
 
-const _uploadCategories = ['상의', '하의', '아우터', '전신'];
+const _uploadCategories = ['상의', '하의', '아우터', '신발', '액세서리', '전신'];
+
+// 체형과 대조 가능한 치수 개념(가슴단면·허리단면 등)이 있는 카테고리만
+// 치수 입력/수정을 노출한다. 신발·액세서리·전신에는 해당 개념이 없다.
+const _sizeInputCategories = {'상의', '하의', '아우터'};
 
 // 위젯과 무관하게 실행되는 백그라운드 작업 — 업로드 화면을 벗어나도
 // 계속 진행되고, 실패해도 조용히 무시한다(분석 시점 폴백이 나중에 채운다).
@@ -87,15 +94,29 @@ class WardrobeScreen extends StatefulWidget {
 class _WardrobeScreenState extends State<WardrobeScreen> {
   String _activeCategory = '전체';
   bool _isUploading = false;
+  String _busyTitle = '사진을 업로드 중입니다...';
+  String _busySubtitle = '잠시만 기다려 주세요';
 
   // 카드 뱃지용 핏 예측에 쓰인다 — Gemini 호출 없이 로컬 계산만 하므로
   // 화면 진입 시 한 번만 불러오면 충분하다.
   UserProfile? _userProfile;
 
+  // 온디바이스 배경 제거(ONNX) 준비 여부. 초기화 자체가 실패하면 이번
+  // 세션에서는 배경 제거 단계를 건너뛰고 원본만 쓰는 흐름으로 조용히
+  // 폴백한다 — 등록 자체를 막지 않는다.
+  bool _isBgRemoverReady = false;
+
   @override
   void initState() {
     super.initState();
     _loadUserProfile();
+    _initBackgroundRemover();
+  }
+
+  @override
+  void dispose() {
+    BackgroundRemover.instance.dispose();
+    super.dispose();
   }
 
   Future<void> _loadUserProfile() async {
@@ -103,6 +124,15 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     if (uid == null) return;
     final profile = await FirestoreService.getUserProfileSilently(uid);
     if (mounted) setState(() => _userProfile = profile);
+  }
+
+  Future<void> _initBackgroundRemover() async {
+    try {
+      await BackgroundRemover.instance.initializeOrt();
+      if (mounted) setState(() => _isBgRemoverReady = true);
+    } catch (_) {
+      // 초기화 실패 — 이번 세션은 배경 제거 없이 원본만 사용.
+    }
   }
 
   List<WardrobeItem> _filter(List<WardrobeItem> all) {
@@ -193,7 +223,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                 ),
                 const SizedBox(height: 10),
               ],
-              if (item.category != '전신')
+              if (_sizeInputCategories.contains(item.category))
                 GestureDetector(
                   onTap: () {
                     Navigator.pop(context);
@@ -301,6 +331,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
     try {
       await StorageService.deleteWardrobeImage(item.imageUrl);
+      if (item.cutoutImageUrl != null) {
+        await StorageService.deleteWardrobeImage(item.cutoutImageUrl!);
+      }
       await FirestoreService.deleteWardrobeItem(item.id);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -340,16 +373,53 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     );
   }
 
+  // 크롭 화면에서 취소하면 null을 반환 — 호출부가 원본을 그대로 쓰게 한다.
+  // 처리 자체가 실패해도(예외) 같은 방식으로 원본 폴백.
+  Future<String?> _cropImage(String sourcePath) async {
+    try {
+      final cropped = await ImageCropper().cropImage(
+        sourcePath: sourcePath,
+        compressQuality: 90,
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: '옷 영역만 잘라내기',
+            toolbarColor: AppColors.navy,
+            toolbarWidgetColor: Colors.white,
+            backgroundColor: Colors.black,
+            lockAspectRatio: false,
+          ),
+          IOSUiSettings(
+            title: '옷 영역만 잘라내기',
+            aspectRatioLockEnabled: false,
+            resetAspectRatioEnabled: true,
+          ),
+        ],
+      );
+      return cropped?.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _pickAndUpload(ImageSource source) async {
     // 해상도를 미리 낮춰 두면 Storage 업로드는 물론, 이후 AI 분석/피팅 때마다
     // 반복되는 다운로드·base64 인코딩 페이로드도 함께 줄어든다.
-    final xFile = await ImagePicker().pickImage(
+    var xFile = await ImagePicker().pickImage(
       source: source,
       imageQuality: 80,
       maxWidth: 1440,
       maxHeight: 1440,
     );
     if (xFile == null || !mounted) return;
+
+    // 크롭(선택) — 쇼핑몰 화면을 통캡처한 사진처럼 옷 외 영역(상태바·구매
+    // 버튼 등)이 섞여 있으면 옷 부분만 잘라낼 수 있게 한다. 이미 깨끗한
+    // 상품 사진이면 크롭 화면에서 취소해 건너뛰고 원본 그대로 진행하면 된다.
+    final croppedPath = await _cropImage(xFile.path);
+    if (!mounted) return;
+    if (croppedPath != null) {
+      xFile = XFile(croppedPath);
+    }
 
     // 카테고리 선택
     final category = await showModalBottomSheet<String>(
@@ -360,9 +430,32 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     );
     if (category == null || !mounted) return;
 
-    // 치수 입력(선택) — 전신 사진은 핏 예측 대상이 아니므로 건너뛴다.
+    // 액세서리 세부 타입(선택) — 코디 보드의 모자/가방/시계 슬롯을
+    // 구분해서 채우려면 필요하다. 건너뛰면 세 슬롯 모두에 폴백으로 노출된다.
+    String? subCategory;
+    if (category == '액세서리') {
+      subCategory = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => const _AccessorySubCategoryPickerSheet(),
+      );
+      if (!mounted) return;
+    }
+
+    // 배경 제거(선택) — 전신 사진은 드래그 조합용 옷이 아니므로 건너뛴다.
+    // 준비가 안 됐거나(초기화 실패) 처리 자체가 실패하면 조용히 원본만 쓴다.
+    Uint8List? cutoutBytes;
+    if (category != '전신' && _isBgRemoverReady) {
+      final originalBytes = await xFile.readAsBytes();
+      if (!mounted) return;
+      cutoutBytes = await _removeBackgroundWithPreview(originalBytes);
+      if (!mounted) return;
+    }
+
+    // 치수 입력(선택) — 신발/액세서리/전신은 핏 예측 대상이 아니므로 건너뛴다.
     ClothingSize? size;
-    if (category != '전신') {
+    if (_sizeInputCategories.contains(category)) {
       size = await showModalBottomSheet<ClothingSize>(
         context: context,
         isScrollControlled: true,
@@ -372,15 +465,27 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       if (!mounted) return;
     }
 
-    setState(() => _isUploading = true);
+    setState(() {
+      _busyTitle = '사진을 업로드 중입니다...';
+      _busySubtitle = '잠시만 기다려 주세요';
+      _isUploading = true;
+    });
     try {
       final imageUrl = await StorageService.uploadWardrobeImage(xFile);
+      String? cutoutImageUrl;
+      if (cutoutBytes != null) {
+        cutoutImageUrl = await StorageService.uploadWardrobeCutout(cutoutBytes);
+      }
       final itemId = await FirestoreService.addWardrobeItem(
         imageUrl: imageUrl,
+        cutoutImageUrl: cutoutImageUrl,
         category: category,
+        subCategory: subCategory,
         size: size,
       );
       // 속성 추출은 업로드 완료를 기다리게 하지 않고 백그라운드로 흘려보낸다.
+      // (배경 제거본이 아니라 항상 원본으로 분석 — 배경 제거 결과가 나빠도
+      // 속성 추출 정확도에 영향이 없게 한다.)
       unawaited(_extractAndCacheAttributes(itemId, imageUrl, category));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -403,6 +508,43 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
+  }
+
+  // 배경 제거 실행 + 결과 미리보기. 처리 자체가 실패하면 null(원본 폴백).
+  // 처리에 성공하면 사용자가 미리보기에서 "원본 사용"/"배경 제거본 사용"을
+  // 직접 고르게 한다 — 저대비 사진 등에서 마스크가 깨질 수 있어 자동
+  // 품질 판별 대신 사람이 눈으로 보고 고르는 쪽을 택했다.
+  Future<Uint8List?> _removeBackgroundWithPreview(Uint8List originalBytes) async {
+    setState(() {
+      _busyTitle = 'AI가 배경을 제거하는 중입니다...';
+      _busySubtitle = '옷 사진을 분석하고 있어요';
+      _isUploading = true;
+    });
+
+    Uint8List? cutoutBytes;
+    try {
+      final resultImage = await BackgroundRemover.instance.removeBg(originalBytes);
+      final byteData = await resultImage.toByteData(format: ui.ImageByteFormat.png);
+      resultImage.dispose();
+      cutoutBytes = byteData?.buffer.asUint8List();
+    } catch (_) {
+      cutoutBytes = null;
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
+    }
+
+    if (cutoutBytes == null || !mounted) return null;
+
+    final useCutout = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _CutoutPreviewSheet(
+        originalBytes: originalBytes,
+        cutoutBytes: cutoutBytes!,
+      ),
+    );
+    return useCutout == true ? cutoutBytes : null;
   }
 
   @override
@@ -634,23 +776,23 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Column(
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(color: AppColors.navy, strokeWidth: 2.5),
-              SizedBox(height: 20),
+              const CircularProgressIndicator(color: AppColors.navy, strokeWidth: 2.5),
+              const SizedBox(height: 20),
               Text(
-                '사진을 업로드 중입니다...',
-                style: TextStyle(
+                _busyTitle,
+                style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              SizedBox(height: 4),
+              const SizedBox(height: 4),
               Text(
-                '잠시만 기다려 주세요',
-                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                _busySubtitle,
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
               ),
             ],
           ),
@@ -661,6 +803,146 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 }
 
 // ── 소스 선택 바텀시트 ──────────────────────────────────
+// ── 배경 제거 결과 미리보기 (선택) ───────────────────────
+class _CutoutPreviewSheet extends StatefulWidget {
+  final Uint8List originalBytes;
+  final Uint8List cutoutBytes;
+
+  const _CutoutPreviewSheet({required this.originalBytes, required this.cutoutBytes});
+
+  @override
+  State<_CutoutPreviewSheet> createState() => _CutoutPreviewSheetState();
+}
+
+class _CutoutPreviewSheetState extends State<_CutoutPreviewSheet> {
+  bool _showCutout = true;
+
+  Widget _buildToggleTab(String label, bool selected, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.navy : AppColors.background,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: selected ? Colors.white : AppColors.textMuted,
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              '배경 제거 결과 확인',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.4,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '결과가 이상하면 원본을 그대로 사용할 수 있어요',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildToggleTab(
+                      '배경 제거본', _showCutout, () => setState(() => _showCutout = true)),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildToggleTab(
+                      '원본', !_showCutout, () => setState(() => _showCutout = false)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              height: 320,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: _showCutout ? const Color(0xFF808080) : AppColors.background,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Image.memory(
+                _showCutout ? widget.cutoutBytes : widget.originalBytes,
+                fit: BoxFit.contain,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('원본 사용',
+                        style: TextStyle(
+                            color: AppColors.textMuted, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => Navigator.pop(context, true),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: AppColors.navy,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        '배경 제거본 사용',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AddBottomSheet extends StatelessWidget {
   final ValueChanged<ImageSource> onPickSource;
 
@@ -769,6 +1051,8 @@ class _CategoryPickerSheet extends StatelessWidget {
                 '상의': Icons.checkroom_outlined,
                 '하의': Icons.straighten,
                 '아우터': Icons.layers_outlined,
+                '신발': Icons.hiking,
+                '액세서리': Icons.watch_outlined,
                 '전신': Icons.person_outline,
               };
               return Padding(
@@ -1120,6 +1404,87 @@ class _SizeInputSheetState extends State<_SizeInputSheet> {
 }
 
 // ── 사이즈표 OCR용 사이즈 행 선택 바텀시트 ───────────────
+// ── 액세서리 세부 타입 선택 (선택) ────────────────────────
+class _AccessorySubCategoryPickerSheet extends StatelessWidget {
+  const _AccessorySubCategoryPickerSheet();
+
+  static const _options = ['모자', '가방', '시계', '팔찌'];
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              '어떤 액세서리인가요? (선택)',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.4,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '코디 보드에서 모자/가방/시계 슬롯을 구분해서 채우는 데 쓰여요',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+            ),
+            const SizedBox(height: 20),
+            ..._options.map((option) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: GestureDetector(
+                    onTap: () => Navigator.pop(context, option),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Text(
+                        option,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                )),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('해당 없음 / 건너뛰기',
+                  style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SizeLabelPickerSheet extends StatefulWidget {
   const _SizeLabelPickerSheet();
 
@@ -1408,7 +1773,7 @@ class _WardrobeCard extends StatelessWidget {
                   borderRadius:
                       const BorderRadius.vertical(top: Radius.circular(10)),
                   child: CachedNetworkImage(
-                    imageUrl: item.imageUrl,
+                    imageUrl: item.cutoutImageUrl ?? item.imageUrl,
                     fit: BoxFit.cover,
                     placeholder: (_, __) => Container(color: AppColors.background),
                     errorWidget: (_, __, ___) => Container(

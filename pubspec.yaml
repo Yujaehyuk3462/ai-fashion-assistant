@@ -21,6 +21,9 @@ dependencies:
   firebase_auth: ^5.5.3
   firebase_app_check: ^0.3.2+3
   crypto: ^3.0.7
+  image_background_remover: ^2.0.0
+  path_provider: ^2.1.6
+  image_cropper: ^12.2.1
 
 dev_dependencies:
   flutter_test:

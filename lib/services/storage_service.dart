@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 class StorageService {
   static final _storage = FirebaseStorage.instance;
   static const _folder = 'wardrobe_images';
+  static const _cutoutFolder = 'wardrobe_cutouts';
   static const _fittingResultsFolder = 'fitting_results';
 
   static Future<String> uploadWardrobeImage(XFile xFile) async {
@@ -18,6 +19,15 @@ class StorageService {
       SettableMetadata(contentType: 'image/jpeg'),
     );
 
+    return ref.getDownloadURL();
+  }
+
+  // 온디바이스 배경 제거 결과(투명 PNG)를 업로드한다. 원본과 별도 경로에
+  // 저장해 원본은 항상 보존되도록 한다.
+  static Future<String> uploadWardrobeCutout(Uint8List pngBytes) async {
+    final fileName = '${DateTime.now().millisecondsSinceEpoch}.png';
+    final ref = _storage.ref().child('$_cutoutFolder/$fileName');
+    await ref.putData(pngBytes, SettableMetadata(contentType: 'image/png'));
     return ref.getDownloadURL();
   }
 

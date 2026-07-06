@@ -571,7 +571,9 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                   borderRadius: BorderRadius.circular(10),
                   child: isFilled
                       ? CachedNetworkImage(
-                          imageUrl: item.imageUrl,
+                          // 드래그 조합 슬롯에서는 배경 제거본이 있으면 우선 사용 —
+                          // 실제 합성/분석 호출(fitting_job_controller)은 항상 원본을 쓴다.
+                          imageUrl: item.cutoutImageUrl ?? item.imageUrl,
                           fit: BoxFit.cover,
                           placeholder: (_, __) => Container(color: AppColors.background),
                           errorWidget: (_, __, ___) => Container(
@@ -1498,7 +1500,7 @@ class _WardrobePickerSheet extends StatelessWidget {
                                 fit: StackFit.expand,
                                 children: [
                                   CachedNetworkImage(
-                                    imageUrl: item.imageUrl,
+                                    imageUrl: item.cutoutImageUrl ?? item.imageUrl,
                                     fit: BoxFit.cover,
                                     placeholder: (_, __) =>
                                         Container(color: AppColors.background),

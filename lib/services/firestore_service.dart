@@ -24,12 +24,16 @@ class FirestoreService {
 
   static Future<String> addWardrobeItem({
     required String imageUrl,
+    String? cutoutImageUrl,
     required String category,
+    String? subCategory,
     ClothingSize? size,
   }) async {
     final doc = await _db.collection(_wardrobeCol).add({
       'imageUrl': imageUrl,
+      if (cutoutImageUrl != null) 'cutoutImageUrl': cutoutImageUrl,
       'category': category,
+      if (subCategory != null) 'subCategory': subCategory,
       'createdAt': FieldValue.serverTimestamp(),
       if (size != null) 'size': size.toFirestore(),
     });

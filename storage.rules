@@ -8,6 +8,12 @@ service firebase.storage {
       allow read, write: if request.auth != null;
     }
 
+    // storage_service.dart의 uploadWardrobeCutout이 온디바이스 배경 제거
+    // 결과(투명 PNG)를 wardrobe_cutouts/{fileName}에 업로드한다.
+    match /wardrobe_cutouts/{fileName} {
+      allow read, write: if request.auth != null;
+    }
+
     // storage_service.dart의 uploadFittingResult가 가상 피팅 캐시 이미지를
     // fitting_results/{cacheKey}.jpg에 업로드/덮어쓰기한다.
     match /fitting_results/{fileName} {
