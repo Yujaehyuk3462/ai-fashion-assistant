@@ -1,277 +1,127 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../constants/app_colors.dart';
+import 'package:provider/provider.dart';
+import '../state/app_state.dart';
+import '../theme/app_colors.dart';
 
-class LoginScreen extends StatefulWidget {
+class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  bool _isLoading = false;
-
-  Future<void> _signInAnonymously() async {
-    setState(() => _isLoading = true);
-    try {
-      await FirebaseAuth.instance.signInAnonymously();
-      // 성공 시 StreamBuilder가 AppShell로 자동 전환
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('로그인 실패: $e'),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: AppColors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28),
-          child: Column(
-            children: [
-              const Spacer(flex: 2),
-              // 로고 영역
-              _buildLogo(),
-              const Spacer(flex: 2),
-              // 로그인 버튼 영역
-              _buildLoginButtons(),
-              const SizedBox(height: 32),
-              // 하단 안내
-              _buildFooter(),
-              const SizedBox(height: 24),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLogo() {
-    return Column(
-      children: [
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            color: AppColors.navy,
-            borderRadius: BorderRadius.circular(22),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.navy.withValues(alpha: 0.35),
-                blurRadius: 24,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.checkroom, color: Colors.white, size: 40),
-        ),
-        const SizedBox(height: 20),
-        const Text(
-          'StyleAI',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 32,
-            fontWeight: FontWeight.w900,
-            letterSpacing: -1.0,
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'AI가 제안하는 나만의 코디',
-          style: TextStyle(
-            color: AppColors.textMuted,
-            fontSize: 15,
-            fontWeight: FontWeight.w400,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLoginButtons() {
-    return Column(
-      children: [
-        // 비회원 로그인 (메인 버튼)
-        GestureDetector(
-          onTap: _isLoading ? null : _signInAnonymously,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(
-              color: _isLoading ? AppColors.textDisabled : AppColors.navy,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: _isLoading
-                  ? []
-                  : [
-                      BoxShadow(
-                        color: AppColors.navy.withValues(alpha: 0.35),
-                        blurRadius: 20,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-            ),
-            child: Row(
+    final app = context.read<AppState>();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 28),
+      child: Column(
+        children: [
+          Expanded(
+            child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (_isLoading)
-                  const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2),
-                  )
-                else
-                  const Icon(Icons.person_outline, color: Colors.white, size: 20),
-                const SizedBox(width: 10),
-                Text(
-                  _isLoading ? '로그인 중...' : '비회원으로 시작하기',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
+                RichText(
+                  text: const TextSpan(
+                    style: TextStyle(
+                      fontSize: 54,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.gray900,
+                      letterSpacing: -1.5,
+                      height: 1,
+                    ),
+                    children: [
+                      TextSpan(text: 'DOT'),
+                      TextSpan(text: '.', style: TextStyle(color: AppColors.accent)),
+                    ],
                   ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  '당신의 취향을 아는\n가장 쉬운 스타일링',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 15, color: AppColors.gray500, height: 1.6),
                 ),
               ],
             ),
           ),
-        ),
-        const SizedBox(height: 24),
-        // 구분선
-        Row(
-          children: [
-            const Expanded(child: Divider(color: AppColors.border)),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Text(
-                '또는 SNS로 로그인',
-                style: TextStyle(
-                  color: AppColors.textPlaceholder,
-                  fontSize: 12,
-                ),
-              ),
-            ),
-            const Expanded(child: Divider(color: AppColors.border)),
-          ],
-        ),
-        const SizedBox(height: 20),
-        // SNS 로그인 버튼들 (준비 중)
-        Row(
-          children: [
-            Expanded(
-              child: _SnsButton(
-                label: 'Google',
-                color: Colors.white,
-                textColor: AppColors.textSecondary,
-                borderColor: AppColors.border,
-                icon: Icons.language,
-                iconColor: const Color(0xFF4285F4),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SnsButton(
-                label: '네이버',
-                color: const Color(0xFF03C75A),
-                textColor: Colors.white,
-                icon: Icons.search,
-                iconColor: Colors.white,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SnsButton(
-                label: '카카오',
-                color: const Color(0xFFFEE500),
-                textColor: const Color(0xFF3C1E1E),
-                icon: Icons.chat_bubble_outline,
-                iconColor: const Color(0xFF3C1E1E),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFooter() {
-    return Column(
-      children: [
-        Text(
-          'SNS 로그인은 준비 중입니다',
-          style: TextStyle(
-            color: AppColors.textPlaceholder,
-            fontSize: 12,
+          _SocialButton(
+            label: 'Google로 계속하기',
+            bg: Colors.white,
+            fg: AppColors.gray900,
+            border: AppColors.gray300,
+            leading: const Text('G',
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: AppColors.google)),
+            onTap: app.login,
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '비회원으로 시작하면 기기 변경 시 데이터가 유지되지 않을 수 있습니다.',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: AppColors.textDisabled,
-            fontSize: 11,
-            height: 1.5,
+          const SizedBox(height: 12),
+          _SocialButton(
+            label: '카카오로 계속하기',
+            bg: AppColors.kakao,
+            fg: AppColors.kakaoText,
+            leading: const Icon(Icons.chat_bubble, size: 18, color: AppColors.kakaoText),
+            onTap: app.login,
           ),
-        ),
-      ],
+          const SizedBox(height: 12),
+          _SocialButton(
+            label: '네이버로 계속하기',
+            bg: AppColors.naver,
+            fg: Colors.white,
+            leading: const Text('N',
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: Colors.white)),
+            onTap: app.login,
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(0, 18, 0, 26),
+            child: Text(
+              '계속 진행하면 이용약관 및 개인정보처리방침에\n동의하는 것으로 간주됩니다.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: Color(0xFFB5B5B5), height: 1.7),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-// ── SNS 버튼 (준비 중 뱃지 포함) ───────────────────────
-class _SnsButton extends StatelessWidget {
+class _SocialButton extends StatelessWidget {
   final String label;
-  final Color color;
-  final Color textColor;
-  final Color? borderColor;
-  final IconData icon;
-  final Color iconColor;
+  final Color bg;
+  final Color fg;
+  final Color? border;
+  final Widget leading;
+  final VoidCallback onTap;
 
-  const _SnsButton({
+  const _SocialButton({
     required this.label,
-    required this.color,
-    required this.textColor,
-    required this.icon,
-    required this.iconColor,
-    this.borderColor,
+    required this.bg,
+    required this.fg,
+    this.border,
+    required this.leading,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: 0.45,
+    return GestureDetector(
+      onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
+        height: 54,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
         decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(10),
-          border: borderColor != null ? Border.all(color: borderColor!) : null,
+          color: bg,
+          borderRadius: BorderRadius.circular(14),
+          border: border != null ? Border.all(color: border!) : null,
         ),
-        child: Column(
+        child: Row(
           children: [
-            Icon(icon, color: iconColor, size: 22),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: textColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
+            SizedBox(width: 22, child: Center(child: leading)),
+            Expanded(
+              child: Center(
+                child: Text(
+                  label,
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: fg),
+                ),
               ),
             ),
+            const SizedBox(width: 22),
           ],
         ),
       ),
