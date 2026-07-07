@@ -13,9 +13,14 @@ class GeminiService {
   // 모델명을 한 곳에 모아서 나중에 교체하기 쉽게 관리한다.
   // gemini-3-flash-preview로 시도해봤으나 응답이 중간에 잘리는 등
   // preview 특유의 불안정함이 반복 확인돼 안정적인 gemini-3.5-flash로 되돌림.
-  // 이미지 합성(Nano Banana Pro)은 그대로 gemini-3-pro-image를 유지한다.
   static const _textModel = 'gemini-3.5-flash';
-  static const _imageModel = 'gemini-3-pro-image';
+
+  // 이미지 합성 모델 — 둘 중 하나만 주석 해제해서 사용. 필요할 때 바꿔가며
+  // 비교해볼 수 있도록 나머지는 주석으로 남겨둔다.
+  // 동일 조건(사람 사진 1장 + 옷 1장) 비교 결과 Nano Banana 2가 평균
+  // 약 1.9배 빠르고(12.7초 vs 23.7초) 품질도 대등해 기본값으로 채택.
+  // static const _imageModel = 'gemini-3-pro-image'; // Nano Banana Pro
+  static const _imageModel = 'gemini-3.1-flash-image'; // Nano Banana 2
 
   // 커넥션을 재사용해 매 요청마다의 TLS 핸드셰이크 비용을 줄인다.
   static final http.Client _client = http.Client();

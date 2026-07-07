@@ -73,25 +73,42 @@ class _BoardLayout {
   static const double hatTop = 0.01;
   static const double hatWidth = 0.26;
   static const double hatHeight = 0.17;
-  static const double hatRotationDeg = -5.0;
+  static const double hatRotationDeg = 0.0;
 
   static const double bagLeft = 0.58;
   static const double bagTop = 0.30;
   static const double bagWidth = 0.38;
   static const double bagHeight = 0.40;
-  static const double bagRotationDeg = 3.0;
+  static const double bagRotationDeg = 0.0;
 
-  static const double watchLeft = 0.10;
-  static const double watchTop = 0.33;
-  static const double watchWidth = 0.12;
-  static const double watchHeight = 0.09;
-  static const double watchRotationDeg = 15.0;
+  static const double watchLeft = 0.11;
+  static const double watchTop = 0.44;
+  static const double watchWidth = 0.195;
+  static const double watchHeight = 0.117;
+  static const double watchRotationDeg = 0.0;
 
-  static const double braceletLeft = 0.09;
-  static const double braceletTop = 0.22;
-  static const double braceletWidth = 0.11;
+  static const double braceletLeft = 0.10;
+  static const double braceletTop = 0.34;
+  static const double braceletWidth = 0.13;
   static const double braceletHeight = 0.07;
-  static const double braceletRotationDeg = -10.0;
+  static const double braceletRotationDeg = 0.0;
+}
+
+// 슬롯의 사용자 편집 상태 — 보드 크기 대비 비율(0~1)인 left/top과,
+// 기본 width/height에 곱해지는 scale(0.5~2.0)만 갖는다. rotationDeg는
+// 슬롯마다 고정값(_BoardLayout)을 그대로 쓰고 편집 대상이 아니다.
+class SlotTransform {
+  final double left;
+  final double top;
+  final double scale;
+
+  const SlotTransform({required this.left, required this.top, this.scale = 1.0});
+
+  SlotTransform copyWith({double? left, double? top, double? scale}) => SlotTransform(
+        left: left ?? this.left,
+        top: top ?? this.top,
+        scale: scale ?? this.scale,
+      );
 }
 
 class CoordBoardScreen extends StatefulWidget {
@@ -105,6 +122,63 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   final Map<String, WardrobeItem?> _slots = {
     for (final s in _boardSlots) s.key: null,
   };
+
+  // slotKey가 이 맵에 없으면 _buildSlot에 전달된 기본 left/top/scale(1.0)을
+  // 그대로 쓴다. 드래그/핀치로 편집한 슬롯만 여기 들어간다.
+  final Map<String, SlotTransform> _transforms = {};
+
+  // 핀치 제스처 도중 누적 scale(details.scale)의 기준점 — onScaleStart에서
+  // 그 시점의 scale을 저장해두고, onScaleUpdate에서 곱해서 절대 scale을 구한다.
+  final Map<String, double> _gestureStartScale = {};
+
+  bool _editMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTransforms();
+  }
+
+  // TODO(firestore): 코디보드 배치를 저장/복원하려면 이 두 메서드만 채우면 된다.
+  // 지금은 앱을 새로 열면 편집한 위치/크기가 초기화된다.
+  Future<void> _loadTransforms() async {}
+
+  Future<void> _saveTransforms() async {}
+
+  void _handleSlotGestureStart(String slotKey) {
+    _gestureStartScale[slotKey] = (_transforms[slotKey] ?? const SlotTransform(left: 0, top: 0)).scale;
+  }
+
+  void _handleSlotGestureUpdate({
+    required String slotKey,
+    required ScaleUpdateDetails details,
+    required double defaultLeft,
+    required double defaultTop,
+    required double defaultWidth,
+    required double defaultHeight,
+    required double boardWidth,
+    required double boardHeight,
+  }) {
+    final current = _transforms[slotKey] ?? SlotTransform(left: defaultLeft, top: defaultTop);
+    final baseScale = _gestureStartScale[slotKey] ?? current.scale;
+    setState(() {
+      final newScale = (baseScale * details.scale).clamp(0.5, 2.0);
+      final widthFrac = defaultWidth * newScale;
+      final heightFrac = defaultHeight * newScale;
+      final maxLeft = (1.0 - widthFrac).clamp(0.0, 1.0);
+      final maxTop = (1.0 - heightFrac).clamp(0.0, 1.0);
+      final newLeft =
+          (current.left + details.focalPointDelta.dx / boardWidth).clamp(0.0, maxLeft);
+      final newTop =
+          (current.top + details.focalPointDelta.dy / boardHeight).clamp(0.0, maxTop);
+      _transforms[slotKey] = SlotTransform(left: newLeft, top: newTop, scale: newScale);
+    });
+  }
+
+  void _handleSlotGestureEnd(String slotKey) {
+    _gestureStartScale.remove(slotKey);
+    _saveTransforms();
+  }
 
   void _pickForSlot(String slotKey) {
     final slot = _boardSlots.firstWhere((s) => s.key == slotKey);
@@ -146,13 +220,34 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
         color: AppColors.surface,
         border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.dashboard_customize_outlined, color: AppColors.navy, size: 22),
-          const SizedBox(width: 8),
-          const Text('코디 보드',
-              style: TextStyle(
-                  color: AppColors.textPrimary, fontSize: 22, fontWeight: FontWeight.w800)),
+          Row(
+            children: [
+              const Icon(Icons.dashboard_customize_outlined, color: AppColors.navy, size: 22),
+              const SizedBox(width: 8),
+              const Text('코디 보드',
+                  style: TextStyle(
+                      color: AppColors.textPrimary, fontSize: 22, fontWeight: FontWeight.w800)),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: () => setState(() => _editMode = !_editMode),
+                style: TextButton.styleFrom(
+                  foregroundColor: _editMode ? AppColors.blue : AppColors.textMuted,
+                ),
+                icon: Icon(_editMode ? Icons.check : Icons.edit_outlined, size: 18),
+                label: Text(_editMode ? '완료' : '편집',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          if (_editMode)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('드래그로 이동 · 두 손가락으로 크기 조절',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+            ),
         ],
       ),
     );
@@ -180,21 +275,27 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
                 // 하의 — 박스 상단에 붙여 그려서 상의 밑단과 실제로 겹쳐 보이게 한다.
                 _buildSlot(
                   slotKey: '하의',
-                  left: w * _BoardLayout.bottomLeft,
-                  top: h * _BoardLayout.bottomTop,
-                  width: w * _BoardLayout.bottomWidth,
-                  height: h * _BoardLayout.bottomHeight,
+                  defaultLeft: _BoardLayout.bottomLeft,
+                  defaultTop: _BoardLayout.bottomTop,
+                  defaultWidth: _BoardLayout.bottomWidth,
+                  defaultHeight: _BoardLayout.bottomHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   alignment: Alignment.topCenter,
                   rotationDeg: _BoardLayout.bottomRotationDeg,
                 ),
                 // 상의 — 아우터가 있으면 오른쪽으로 밀려 아우터 뒤에 걸친다.
                 // 박스 하단에 붙여 그려서 하의와 겹치는 부분이 실제로 보이게 한다.
+                // (편집으로 위치를 직접 옮긴 뒤에는 이 자동 스위칭 대신 사용자가
+                // 정한 위치가 우선한다 — _transforms에 값이 들어가기 때문.)
                 _buildSlot(
                   slotKey: '상의',
-                  left: w * (hasOuter ? _BoardLayout.topWithOuterLeft : _BoardLayout.topLeft),
-                  top: h * (hasOuter ? _BoardLayout.topWithOuterTop : _BoardLayout.topTop),
-                  width: w * (hasOuter ? _BoardLayout.topWithOuterWidth : _BoardLayout.topWidth),
-                  height: h * _BoardLayout.topHeight,
+                  defaultLeft: hasOuter ? _BoardLayout.topWithOuterLeft : _BoardLayout.topLeft,
+                  defaultTop: hasOuter ? _BoardLayout.topWithOuterTop : _BoardLayout.topTop,
+                  defaultWidth: hasOuter ? _BoardLayout.topWithOuterWidth : _BoardLayout.topWidth,
+                  defaultHeight: _BoardLayout.topHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   alignment: Alignment.bottomCenter,
                   rotationDeg: _BoardLayout.topRotationDeg,
                 ),
@@ -202,54 +303,66 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
                 if (hasOuter)
                   _buildSlot(
                     slotKey: '아우터',
-                    left: w * _BoardLayout.outerLeft,
-                    top: h * _BoardLayout.outerTop,
-                    width: w * _BoardLayout.outerWidth,
-                    height: h * _BoardLayout.outerHeight,
+                    defaultLeft: _BoardLayout.outerLeft,
+                    defaultTop: _BoardLayout.outerTop,
+                    defaultWidth: _BoardLayout.outerWidth,
+                    defaultHeight: _BoardLayout.outerHeight,
+                    boardWidth: w,
+                    boardHeight: h,
                   ),
                 // 모자
                 _buildSlot(
                   slotKey: '모자',
-                  left: w * _BoardLayout.hatLeft,
-                  top: h * _BoardLayout.hatTop,
-                  width: w * _BoardLayout.hatWidth,
-                  height: h * _BoardLayout.hatHeight,
+                  defaultLeft: _BoardLayout.hatLeft,
+                  defaultTop: _BoardLayout.hatTop,
+                  defaultWidth: _BoardLayout.hatWidth,
+                  defaultHeight: _BoardLayout.hatHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   rotationDeg: _BoardLayout.hatRotationDeg,
                 ),
                 // 가방 — 오른쪽 중단을 크게 채움
                 _buildSlot(
                   slotKey: '가방',
-                  left: w * _BoardLayout.bagLeft,
-                  top: h * _BoardLayout.bagTop,
-                  width: w * _BoardLayout.bagWidth,
-                  height: h * _BoardLayout.bagHeight,
+                  defaultLeft: _BoardLayout.bagLeft,
+                  defaultTop: _BoardLayout.bagTop,
+                  defaultWidth: _BoardLayout.bagWidth,
+                  defaultHeight: _BoardLayout.bagHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   rotationDeg: _BoardLayout.bagRotationDeg,
                 ),
                 // 시계
                 _buildSlot(
                   slotKey: '시계',
-                  left: w * _BoardLayout.watchLeft,
-                  top: h * _BoardLayout.watchTop,
-                  width: w * _BoardLayout.watchWidth,
-                  height: h * _BoardLayout.watchHeight,
+                  defaultLeft: _BoardLayout.watchLeft,
+                  defaultTop: _BoardLayout.watchTop,
+                  defaultWidth: _BoardLayout.watchWidth,
+                  defaultHeight: _BoardLayout.watchHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   rotationDeg: _BoardLayout.watchRotationDeg,
                 ),
                 // 팔찌 — 시계 바로 위
                 _buildSlot(
                   slotKey: '팔찌',
-                  left: w * _BoardLayout.braceletLeft,
-                  top: h * _BoardLayout.braceletTop,
-                  width: w * _BoardLayout.braceletWidth,
-                  height: h * _BoardLayout.braceletHeight,
+                  defaultLeft: _BoardLayout.braceletLeft,
+                  defaultTop: _BoardLayout.braceletTop,
+                  defaultWidth: _BoardLayout.braceletWidth,
+                  defaultHeight: _BoardLayout.braceletHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   rotationDeg: _BoardLayout.braceletRotationDeg,
                 ),
                 // 신발 — 하의 밑단과 겹치게, 맨 앞
                 _buildSlot(
                   slotKey: '신발',
-                  left: w * _BoardLayout.shoesLeft,
-                  top: h * _BoardLayout.shoesTop,
-                  width: w * _BoardLayout.shoesWidth,
-                  height: h * _BoardLayout.shoesHeight,
+                  defaultLeft: _BoardLayout.shoesLeft,
+                  defaultTop: _BoardLayout.shoesTop,
+                  defaultWidth: _BoardLayout.shoesWidth,
+                  defaultHeight: _BoardLayout.shoesHeight,
+                  boardWidth: w,
+                  boardHeight: h,
                   rotationDeg: _BoardLayout.shoesRotationDeg,
                 ),
               ],
@@ -262,13 +375,19 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
 
   Widget _buildSlot({
     required String slotKey,
-    required double left,
-    required double top,
-    required double width,
-    required double height,
+    required double defaultLeft,
+    required double defaultTop,
+    required double defaultWidth,
+    required double defaultHeight,
+    required double boardWidth,
+    required double boardHeight,
     double rotationDeg = 0,
     Alignment alignment = Alignment.center,
   }) {
+    final transform = _transforms[slotKey] ?? SlotTransform(left: defaultLeft, top: defaultTop);
+    final width = boardWidth * defaultWidth * transform.scale;
+    final height = boardHeight * defaultHeight * transform.scale;
+
     final item = _slots[slotKey];
     Widget content = SizedBox(
       width: width,
@@ -290,10 +409,25 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
     }
 
     return Positioned(
-      left: left,
-      top: top,
+      left: boardWidth * transform.left,
+      top: boardHeight * transform.top,
       child: GestureDetector(
-        onTap: () => _pickForSlot(slotKey),
+        behavior: HitTestBehavior.opaque,
+        onTap: _editMode ? null : () => _pickForSlot(slotKey),
+        onScaleStart: _editMode ? (_) => _handleSlotGestureStart(slotKey) : null,
+        onScaleUpdate: _editMode
+            ? (details) => _handleSlotGestureUpdate(
+                  slotKey: slotKey,
+                  details: details,
+                  defaultLeft: defaultLeft,
+                  defaultTop: defaultTop,
+                  defaultWidth: defaultWidth,
+                  defaultHeight: defaultHeight,
+                  boardWidth: boardWidth,
+                  boardHeight: boardHeight,
+                )
+            : null,
+        onScaleEnd: _editMode ? (_) => _handleSlotGestureEnd(slotKey) : null,
         child: content,
       ),
     );

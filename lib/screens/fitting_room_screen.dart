@@ -719,11 +719,14 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   Color _fitColor(FitLevel level) {
     switch (level) {
-      case FitLevel.tight:
+      case FitLevel.slim:
         return AppColors.red;
       case FitLevel.regular:
         return AppColors.greenDark;
+      case FitLevel.semiOversized:
+        return AppColors.amber;
       case FitLevel.oversized:
+      case FitLevel.loose:
         return AppColors.blue;
     }
   }

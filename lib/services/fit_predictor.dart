@@ -1,7 +1,7 @@
 import '../models/clothing_size.dart';
 import '../models/user_profile.dart';
 
-enum FitLevel { tight, regular, oversized }
+enum FitLevel { slim, regular, semiOversized, oversized, loose }
 
 class FitResult {
   final FitLevel level;
@@ -19,10 +19,14 @@ class FitResult {
 // 예측기. 임계값은 실측 데이터가 아니라 참고용 초기값이며, 실제 옷으로
 // 검증한 뒤 조정이 필요하다.
 class FitPredictor {
-  static const _chestTightMax = 8.0;
-  static const _chestRegularMax = 20.0;
-  static const _waistTightMax = 3.0;
-  static const _waistRegularMax = 12.0;
+  // 상의/아우터 - 가슴 여유분(cm) 임계값
+  static const chestSlimMax = 8.0;
+  static const chestRegularMax = 14.0;
+  static const chestSemiOversizedMax = 22.0;
+
+  // 하의 - 허리 여유분(cm) 임계값
+  static const waistSlimMax = 3.0;
+  static const waistRegularMax = 12.0;
 
   // 카테고리별로 대조 가능한 치수·체형 값이 둘 다 있을 때만 결과를 낸다.
   // 하나라도 없으면 억지로 추정하지 않고 null(예측 불가)을 반환한다.
@@ -40,30 +44,38 @@ class FitPredictor {
         final chestCm = profile.chestCm;
         if (chestWidth == null || chestCm == null) return null;
         final ease = chestWidth * 2 - chestCm;
-        return _classify(ease, _chestTightMax, _chestRegularMax, oversizedLabel: '오버핏');
+        return _classifyTop(ease);
       case '하의':
         final waistWidth = size.waistWidth;
         final waistCm = profile.waistCm;
         if (waistWidth == null || waistCm == null) return null;
         final ease = waistWidth * 2 - waistCm;
-        return _classify(ease, _waistTightMax, _waistRegularMax, oversizedLabel: '루즈');
+        return _classifyBottom(ease);
       default:
         return null;
     }
   }
 
-  static FitResult _classify(
-    double ease,
-    double tightMax,
-    double regularMax, {
-    required String oversizedLabel,
-  }) {
-    if (ease < tightMax) {
-      return FitResult(level: FitLevel.tight, label: '타이트', easeCm: ease);
+  static FitResult _classifyTop(double ease) {
+    if (ease < chestSlimMax) {
+      return FitResult(level: FitLevel.slim, label: '슬림핏', easeCm: ease);
     }
-    if (ease <= regularMax) {
-      return FitResult(level: FitLevel.regular, label: '적당함', easeCm: ease);
+    if (ease <= chestRegularMax) {
+      return FitResult(level: FitLevel.regular, label: '정핏', easeCm: ease);
     }
-    return FitResult(level: FitLevel.oversized, label: oversizedLabel, easeCm: ease);
+    if (ease <= chestSemiOversizedMax) {
+      return FitResult(level: FitLevel.semiOversized, label: '세미오버핏', easeCm: ease);
+    }
+    return FitResult(level: FitLevel.oversized, label: '오버핏', easeCm: ease);
+  }
+
+  static FitResult _classifyBottom(double ease) {
+    if (ease < waistSlimMax) {
+      return FitResult(level: FitLevel.slim, label: '슬림핏', easeCm: ease);
+    }
+    if (ease <= waistRegularMax) {
+      return FitResult(level: FitLevel.regular, label: '정핏', easeCm: ease);
+    }
+    return FitResult(level: FitLevel.loose, label: '루즈핏', easeCm: ease);
   }
 }
