@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -14,6 +15,27 @@ class GeminiService {
   // gemini-3-flash-preview로 시도해봤으나 응답이 중간에 잘리는 등
   // preview 특유의 불안정함이 반복 확인돼 안정적인 gemini-3.5-flash로 되돌림.
   static const _textModel = 'gemini-3.5-flash';
+
+  // 기본 텍스트 모델이 과부하(503)·요청 급증(429)·타임아웃으로 실패했을 때
+  // 같은 모델로 다시 두드리는 대신 바꿔 타는 대체 모델.
+  static const textModelFallback = 'gemini-2.5-flash';
+
+  // extractAttributes/extractSizeFromChart/analyzeOutfitFromAttributes(Stream)
+  // 등 텍스트 모델을 쓰는 모든 호출에 공통 적용하는 재시도 정책 — 기본
+  // 모델이 일시적 오류로 실패하면 같은 모델이 아니라 대체 모델로 한 번만
+  // 더 시도한다. action은 실제 사용할 모델명을 받아 그 모델로 호출해야 한다.
+  static Future<T> withTextModelFallback<T>(
+    Future<T> Function(String model) action,
+  ) async {
+    try {
+      return await action(_textModel);
+    } on TimeoutException {
+      return await action(textModelFallback);
+    } on GeminiApiException catch (e) {
+      if (!e.isRetryable) rethrow;
+      return await action(textModelFallback);
+    }
+  }
 
   // 이미지 합성 모델 — 둘 중 하나만 주석 해제해서 사용. 필요할 때 바꿔가며
   // 비교해볼 수 있도록 나머지는 주석으로 남겨둔다.
@@ -78,6 +100,7 @@ class GeminiService {
   static Future<ClothingAttributes> extractAttributes({
     required String imageUrl,
     required String category,
+    String? model,
   }) async {
     final bytes = await _downloadImageBytesCached(imageUrl);
     final parts = <Map<String, dynamic>>[
@@ -101,7 +124,8 @@ class GeminiService {
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse(
+              '$_baseUrl/models/${model ?? _textModel}:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
@@ -126,6 +150,7 @@ class GeminiService {
     required Uint8List imageBytes,
     required String category,
     required String sizeLabel,
+    String? model,
   }) async {
     final parts = <Map<String, dynamic>>[
       {'text': _buildSizeChartExtractionPrompt(category: category, sizeLabel: sizeLabel)},
@@ -146,7 +171,8 @@ class GeminiService {
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse(
+              '$_baseUrl/models/${model ?? _textModel}:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
@@ -206,6 +232,7 @@ class GeminiService {
     String? userPhotoUrl,
     UserProfile? userProfile,
     String? recentHistoryText,
+    String? model,
   }) async {
     // 옷 이미지는 더 이상 보내지 않는다 — 등록 시점에 뽑아둔 색상/스타일/
     // 패턴/격식/핏/태그 텍스트만으로 매칭을 평가하므로 입력이 훨씬 가볍다.
@@ -246,7 +273,8 @@ class GeminiService {
 
     final response = await _client
         .post(
-          Uri.parse('$_baseUrl/models/$_textModel:generateContent?key=${Env.geminiApiKey}'),
+          Uri.parse(
+              '$_baseUrl/models/${model ?? _textModel}:generateContent?key=${Env.geminiApiKey}'),
           headers: {'Content-Type': 'application/json'},
           body: requestBody,
         )
@@ -269,6 +297,7 @@ class GeminiService {
     String? userPhotoUrl,
     UserProfile? userProfile,
     String? recentHistoryText,
+    String? model,
   }) async* {
     final hasProfile = userProfile != null && userProfile.hasAnyData;
 
@@ -302,7 +331,8 @@ class GeminiService {
 
     final request = http.Request(
       'POST',
-      Uri.parse('$_baseUrl/models/$_textModel:streamGenerateContent?alt=sse&key=${Env.geminiApiKey}'),
+      Uri.parse(
+          '$_baseUrl/models/${model ?? _textModel}:streamGenerateContent?alt=sse&key=${Env.geminiApiKey}'),
     )
       ..headers['Content-Type'] = 'application/json'
       // gzip 응답은 dart:io가 자동 압축 해제하면서 전체 바디를 다 받을 때까지

@@ -16,7 +16,6 @@ import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import '../services/fit_predictor.dart';
 import '../services/firestore_service.dart';
-import '../services/gemini_api_exception.dart';
 import '../services/gemini_service.dart';
 import '../services/outfit_matcher.dart';
 import '../services/storage_service.dart';
@@ -85,7 +84,9 @@ Future<void> _generateRecommendationSilently(WardrobeItem newItem) async {
     debugPrint('[RECOMMEND] Gemini 분석 요청 중...');
     String analysisText;
     try {
-      analysisText = await GeminiService.analyzeOutfitFromAttributes(items: itemsForAnalysis);
+      analysisText = await GeminiService.withTextModelFallback(
+        (model) => GeminiService.analyzeOutfitFromAttributes(items: itemsForAnalysis, model: model),
+      );
     } catch (e) {
       debugPrint('[RECOMMEND] Gemini 호출 실패: $e');
       return;
@@ -123,45 +124,36 @@ String _stripColorScoreLine(String analysisText) {
   return analysisText.replaceFirst(RegExp(r'\[점수\]\s*\d+\n?'), '').trim();
 }
 
-// 타임아웃 등 일시적 오류는 한 번 더 시도해본다.
+// 타임아웃/일시적 과부하 시 같은 모델로 재시도하는 대신 대체 모델로 바꿔
+// 한 번 더 시도한다(GeminiService.withTextModelFallback 공통 정책).
 Future<ClothingAttributes> _extractAttributesWithRetry(
   String imageUrl,
   String category,
-) async {
-  try {
-    return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
-  } on TimeoutException {
-    return await GeminiService.extractAttributes(imageUrl: imageUrl, category: category);
-  }
+) {
+  return GeminiService.withTextModelFallback(
+    (model) => GeminiService.extractAttributes(
+      imageUrl: imageUrl,
+      category: category,
+      model: model,
+    ),
+  );
 }
 
-// 사이즈표 OCR도 타임아웃/503·429 같은 일시적 오류는 한 번 더 시도해보고,
-// 그래도 실패하면 그대로 던져서 호출부가 손 입력 폴백으로 안내하게 한다.
+// 사이즈표 OCR도 동일한 정책 적용. 그래도 실패하면 그대로 던져서 호출부가
+// 손 입력 폴백으로 안내하게 한다.
 Future<ClothingSize> _scanSizeChartWithRetry({
   required Uint8List imageBytes,
   required String category,
   required String sizeLabel,
-}) async {
-  try {
-    return await GeminiService.extractSizeFromChart(
+}) {
+  return GeminiService.withTextModelFallback(
+    (model) => GeminiService.extractSizeFromChart(
       imageBytes: imageBytes,
       category: category,
       sizeLabel: sizeLabel,
-    );
-  } on TimeoutException {
-    return await GeminiService.extractSizeFromChart(
-      imageBytes: imageBytes,
-      category: category,
-      sizeLabel: sizeLabel,
-    );
-  } on GeminiApiException catch (e) {
-    if (!e.isRetryable) rethrow;
-    return await GeminiService.extractSizeFromChart(
-      imageBytes: imageBytes,
-      category: category,
-      sizeLabel: sizeLabel,
-    );
-  }
+      model: model,
+    ),
+  );
 }
 
 class WardrobeScreen extends StatefulWidget {

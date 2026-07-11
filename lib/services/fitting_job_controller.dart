@@ -93,12 +93,13 @@ class FittingJobController extends ChangeNotifier {
         debugPrint('[STREAM-FALLBACK] 스트리밍 실패, 원인: $e');
         analysisResult = null;
         notifyListeners();
-        analysisResult = await _withRetry(
-          () => GeminiService.analyzeOutfitFromAttributes(
+        analysisResult = await GeminiService.withTextModelFallback(
+          (model) => GeminiService.analyzeOutfitFromAttributes(
             items: itemsWithAttributes,
             userPhotoUrl: userPhoto?.imageUrl,
             userProfile: userProfile,
             recentHistoryText: recentHistoryText,
+            model: model,
           ),
         );
       }
@@ -157,10 +158,11 @@ class FittingJobController extends ChangeNotifier {
       final cached = item.attributes;
       if (cached != null) return (category: item.category, attributes: cached);
 
-      final extracted = await _withRetry(
-        () => GeminiService.extractAttributes(
+      final extracted = await GeminiService.withTextModelFallback(
+        (model) => GeminiService.extractAttributes(
           imageUrl: item.imageUrl,
           category: item.category,
+          model: model,
         ),
       );
       unawaited(FirestoreService.updateWardrobeAttributes(item.id, extracted));
