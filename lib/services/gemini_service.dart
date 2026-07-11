@@ -289,6 +289,76 @@ class GeminiService {
     return _extractTextFromResponse(response.body);
   }
 
+  // ── 주간 코디 플랜 (여러 날 일정을 한 번에 계획) ──────────
+  // 개별 코디 분석과 달리 "여러 날에 걸친 배분"이 핵심이라 날짜별로 나눠
+  // 부르지 않고 한 번의 호출로 전체 플랜을 받는다(중복 회피·격식 배분 같은
+  // 제약은 날짜들을 동시에 봐야 지킬 수 있다). 응답은 JSON 배열 텍스트로
+  // 반환하고, 파싱/검증은 호출부(AgentPlanner)가 맡는다.
+  //
+  // scheduleLines: "1. 2026-07-14 (월) — 출근 — 요구 격식: 세미포멀" 형태의 줄들.
+  // wardrobeCatalog: "- id=xxx | 상의 | 네이비/캐주얼/무지" 형태의 줄들.
+  static Future<String> planWeeklyOutfits({
+    required String scheduleLines,
+    required String wardrobeCatalog,
+    String? recentFeedbackText, // 최근 불일치 피드백(취향 반영용, 있을 때만)
+    String? model,
+  }) async {
+    final feedbackSection = (recentFeedbackText == null || recentFeedbackText.isEmpty)
+        ? ''
+        : '\n[취향 피드백 - 반영하세요]\n$recentFeedbackText\n';
+    final prompt = '''
+당신은 전문 패션 스타일리스트입니다. 아래 옷장 아이템만 사용해 요청된 날짜별 코디를 계획하세요.
+
+[옷장 아이템] (반드시 이 id만 사용, 목록에 없는 id는 절대 만들지 마세요)
+$wardrobeCatalog
+
+[계획할 날짜]
+$scheduleLines
+$feedbackSection
+[제약 조건 - 반드시 지키세요]
+- 각 날짜에 상의 1개 + 하의 1개를 기본으로 배정하고, 필요하면 아우터/신발을 더하세요.
+- 같은 상의 또는 같은 하의를 이틀 연속 배치하지 마세요(중복 회피).
+- 격식이 높은 조합(포멀/세미포멀 아이템)은 출근·데이트·모임처럼 격식이 필요한 날에 우선 배분하세요.
+- 어떤 날짜에 그 격식에 딱 맞는 아이템이 옷장에 없더라도 그 날을 건너뛰지 말고, 가장 가까운 차선 조합을 배정한 뒤 reason에 "딱 맞는 조합이 없어 가장 가까운 조합"임을 밝히세요.
+- itemIds는 위 옷장에 실제로 존재하는 id만 사용하세요.
+
+[출력 형식 - 반드시 지키세요]
+순수 JSON 배열만 출력하세요. 설명 문구·마크다운·코드블록을 절대 붙이지 마세요. 응답의 첫 문자는 '[' 여야 합니다.
+각 원소는 {"date":"YYYY-MM-DD","itemIds":["id1","id2"],"reason":"한 줄 이유(한국어)"} 형식입니다.
+''';
+
+    final requestBody = jsonEncode({
+      'contents': [
+        {'parts': [{'text': prompt}]}
+      ],
+      'generationConfig': {
+        // 계획은 창의성보다 제약 준수가 중요하므로 온도를 낮춘다.
+        'temperature': 0.4,
+        'maxOutputTokens': 2000,
+        'responseMimeType': 'application/json',
+        // 다른 JSON 호출과 동일하게 thinking 예산을 꺼서 출력이 잘리지 않게 한다.
+        'thinkingConfig': {'thinkingBudget': 0},
+      },
+    });
+
+    final response = await _client
+        .post(
+          Uri.parse(
+              '$_baseUrl/models/${model ?? _textModel}:generateContent?key=${Env.geminiApiKey}'),
+          headers: {'Content-Type': 'application/json'},
+          body: requestBody,
+        )
+        .timeout(const Duration(seconds: 60));
+
+    if (response.statusCode != 200) {
+      final errorBody = jsonDecode(response.body);
+      final message = (errorBody['error']?['message'] as String?) ?? '알 수 없는 오류';
+      throw GeminiApiException(response.statusCode, message);
+    }
+
+    return _extractTextFromResponse(response.body);
+  }
+
   // ── 코디 텍스트 분석 (스트리밍) ──────────────────────────
   // analyzeOutfitFromAttributes와 프롬프트/설정은 동일하되, SSE로 델타
   // 텍스트를 그때그때 yield해 화면에 점진적으로 표시할 수 있게 한다.

@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import '../models/agent_log_entry.dart';
 import '../models/clothing_attributes.dart';
+import '../models/outfit_calendar_entry.dart';
 import '../models/clothing_size.dart';
 import '../models/outfit_history_entry.dart';
 import '../models/recommendation_entry.dart';
@@ -195,6 +197,194 @@ class FirestoreService {
         .collection(_recommendationsCol)
         .doc(id)
         .update({'dismissed': true});
+  }
+
+  // 특정 날짜 일정을 위한 선제 추천이 이미 있는지 확인(중복 생성 방지).
+  // targetDate 단일 필드 equality라 복합 인덱스가 필요 없다. 실패 시 조용히
+  // false 쪽(추천 없음)으로 처리하지 않고 null로 구분 — 호출부가 판단한다.
+  static Future<bool> hasRecommendationForDateSilently(String uid, DateTime date) async {
+    try {
+      final normalized = DateTime(date.year, date.month, date.day);
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_recommendationsCol)
+          .where('targetDate', isEqualTo: Timestamp.fromDate(normalized))
+          .limit(1)
+          .get();
+      return snapshot.docs.isNotEmpty;
+    } catch (e) {
+      debugPrint('[PLAN] 추천 중복 조회 실패: $e');
+      return false;
+    }
+  }
+
+  // ── 레벨 3: 피드백 학습 ──
+  // 특정 날짜 일정을 위한 선제 추천들 조회(피드백 대조용). targetDate 단일
+  // 필드 equality라 복합 인덱스 불필요. TPO 필터는 호출부가 클라이언트에서.
+  static Future<List<RecommendationEntry>> recommendationsForDateSilently(
+      String uid, DateTime date) async {
+    try {
+      final normalized = DateTime(date.year, date.month, date.day);
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_recommendationsCol)
+          .where('targetDate', isEqualTo: Timestamp.fromDate(normalized))
+          .get();
+      return snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList();
+    } catch (e) {
+      debugPrint('[FEEDBACK] 날짜별 추천 조회 실패: $e');
+      return [];
+    }
+  }
+
+  // 추천 문서에 사용자 반응(채택/불일치)을 기록. 부가 기능이라 실패는 조용히 무시.
+  static Future<void> updateRecommendationFeedbackSilently(
+    String uid,
+    String recId, {
+    required String userChoice,
+    List<String> userChosenItemIds = const [],
+  }) async {
+    try {
+      await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_recommendationsCol)
+          .doc(recId)
+          .update({
+        'userChoice': userChoice,
+        if (userChosenItemIds.isNotEmpty) 'userChosenItemIds': userChosenItemIds,
+      });
+    } catch (e) {
+      debugPrint('[FEEDBACK] 피드백 기록 실패: $e');
+    }
+  }
+
+  // 최근 "불일치 피드백"(추천 대신 다른 조합을 고른) 기록. RAG 프롬프트에
+  // 주입해 취향 차이를 반영한다. where(userChoice==) 단일 필드라 복합 인덱스
+  // 불필요 — orderBy 없이 넉넉히 가져와 클라이언트에서 최신순 정렬한다.
+  static Future<List<RecommendationEntry>> getRecentFeedbackSilently(
+    String uid, {
+    int limit = 5,
+  }) async {
+    try {
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_recommendationsCol)
+          .where('userChoice', isEqualTo: 'rejected_with_alternative')
+          .limit(20)
+          .get();
+      final list = snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return list.take(limit).toList();
+    } catch (e) {
+      debugPrint('[FEEDBACK] 최근 피드백 조회 실패: $e');
+      return [];
+    }
+  }
+
+  // ── 에이전트 활동 로그 (백그라운드 행동 서사, 본인만 접근 가능) ──
+  // history/recommendations가 "결과물"이라면 여기는 그 결과에 이르는 "행동"을
+  // 남긴다. where 없이 createdAt orderBy만 쓰므로 복합 인덱스가 필요 없다.
+  static const _agentLogsCol = 'agent_logs';
+
+  // 로그 기록은 추천/분석/피팅 같은 핵심 흐름의 부가 작업이므로, 실패해도
+  // 조용히 무시한다 (addHistoryEntrySilently와 동일한 fire-and-forget 패턴).
+  static Future<void> addAgentLogSilently(String uid, AgentLogEntry entry) async {
+    try {
+      await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_agentLogsCol)
+          .add(entry.toFirestore());
+    } catch (e) {
+      // 무시 — 로그를 못 남겨도 사용자가 겪는 기능(추천/분석/피팅)에는 영향 없다.
+      debugPrint('[에이전트로그저장] 실패: $e');
+    }
+  }
+
+  // 활동 내역 화면이 구독하는 최신순 스트림. orderBy 단독이라 자동 인덱스로 충분.
+  static Stream<List<AgentLogEntry>> agentLogStream(String uid, {int limit = 100}) {
+    return _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_agentLogsCol)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snapshot) =>
+            snapshot.docs.map((doc) => AgentLogEntry.fromFirestore(doc)).toList());
+  }
+
+  // ── 착장 캘린더 (OOTD 기록, 본인만 접근 가능) ──
+  // date 필드의 range(>=, <=)와 orderBy가 같은 필드라 복합 인덱스가 필요 없다.
+  static const _calendarCol = 'calendar';
+
+  // 착장 기록은 사용자의 명시적 액션이라, 실패를 삼키지 않고 그대로 던진다
+  // (addScrap과 동일 원칙 — 호출부가 스낵바로 알린다). 저장된 문서 id를 반환.
+  static Future<String> addCalendarEntry(String uid, OutfitCalendarEntry entry) async {
+    final doc = await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_calendarCol)
+        .add(entry.toFirestore());
+    return doc.id;
+  }
+
+  static Future<void> deleteCalendarEntry(String uid, String id) async {
+    await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_calendarCol)
+        .doc(id)
+        .delete();
+  }
+
+  // 해당 월(1일 00:00 ~ 다음달 1일 00:00 미만) 기록 스트림 — 캘린더 화면용.
+  static Stream<List<OutfitCalendarEntry>> calendarEntriesForMonth(
+    String uid,
+    int year,
+    int month,
+  ) {
+    final start = DateTime(year, month, 1);
+    final end = DateTime(year, month + 1, 1); // 다음 달 1일(미만 비교)
+    return _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_calendarCol)
+        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('date', isLessThan: Timestamp.fromDate(end))
+        .orderBy('date')
+        .snapshots()
+        .map((snapshot) =>
+            snapshot.docs.map((doc) => OutfitCalendarEntry.fromFirestore(doc)).toList());
+  }
+
+  // 임의 범위 조회 — 이후 에이전트(주간 플랜/선제 추천)가 다가오는 일정과
+  // 과거 착장을 함께 읽을 때 쓴다. 실패해도 조용히 빈 리스트.
+  static Future<List<OutfitCalendarEntry>> calendarEntriesForRange(
+    String uid,
+    DateTime from,
+    DateTime to,
+  ) async {
+    try {
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_calendarCol)
+          .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+          .where('date', isLessThanOrEqualTo: Timestamp.fromDate(to))
+          .orderBy('date')
+          .get();
+      return snapshot.docs
+          .map((doc) => OutfitCalendarEntry.fromFirestore(doc))
+          .toList();
+    } catch (e) {
+      debugPrint('[캘린더조회] 실패: $e');
+      return [];
+    }
   }
 
   // ── 가상 피팅 스크랩 (사용자가 직접 북마크, 본인만 접근 가능) ──

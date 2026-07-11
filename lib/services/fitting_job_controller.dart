@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import '../models/agent_log_entry.dart';
 import '../models/clothing_attributes.dart';
 import '../models/outfit_history_entry.dart';
 import '../models/user_profile.dart';
@@ -139,12 +140,21 @@ class FittingJobController extends ChangeNotifier {
         formality: resolved.attributes.formality,
       );
     });
+    final score = _parseScore(analysisResult);
     unawaited(FirestoreService.addHistoryEntrySilently(
       uid,
       OutfitHistoryEntry(
         type: OutfitHistoryEntry.typeAnalysis,
         items: snapshots,
-        score: _parseScore(analysisResult),
+        score: score,
+      ),
+    ));
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeAnalysisCompleted,
+        message: score != null ? '코디 분석을 완료했습니다 ($score점)' : '코디 분석을 완료했습니다',
       ),
     ));
   }
@@ -293,6 +303,14 @@ class FittingJobController extends ChangeNotifier {
         type: OutfitHistoryEntry.typeFitting,
         items: clothingItems.map(HistoryItemSnapshot.fromWardrobeItem).toList(),
         fittingImageUrl: fittingImageUrl,
+      ),
+    ));
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeFittingGenerated,
+        message: '가상 피팅 이미지를 생성했습니다',
       ),
     ));
   }

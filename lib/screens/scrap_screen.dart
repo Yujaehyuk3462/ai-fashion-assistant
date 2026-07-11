@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../models/outfit_calendar_entry.dart';
 import '../models/scrap_entry.dart';
 import '../services/firestore_service.dart';
+import '../widgets/calendar_record_sheet.dart';
 import '../widgets/full_screen_image_viewer.dart';
 
 // 설정 화면 "내 스크랩"에서 진입 — 피팅룸에서 북마크한 가상 피팅 결과를
@@ -144,6 +146,34 @@ class _ScrapCard extends StatelessWidget {
     }
   }
 
+  // 스크랩을 특정 날짜의 착장으로 캘린더에 기록. 날짜를 먼저 고른 뒤,
+  // 캘린더 화면과 같은 바텀시트를 이 스크랩의 이미지/아이템으로 프리필해 연다.
+  Future<void> _recordToCalendar(BuildContext context) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: DateTime(2020, 1, 1),
+      lastDate: DateTime(now.year + 1, 12, 31),
+      helpText: '착장을 입은 날짜 선택',
+    );
+    if (picked == null || !context.mounted) return;
+    final saved = await showCalendarRecordSheet(
+      context,
+      date: OutfitCalendarEntry.normalizeDate(picked),
+      prefillImageUrl: entry.fittingImageUrl,
+      prefillItemIds: entry.itemIds,
+      prefillItemSummaries: entry.itemSummaries,
+    );
+    if (saved == true && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('캘린더에 착장을 기록했어요'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.blue,
+      ));
+    }
+  }
+
   void _openFullScreen(BuildContext context) {
     Navigator.of(context).push(
       PageRouteBuilder(
@@ -205,6 +235,22 @@ class _ScrapCard extends StatelessWidget {
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.close, color: Colors.white, size: 14),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: GestureDetector(
+                      onTap: () => _recordToCalendar(context),
+                      child: Container(
+                        width: 26,
+                        height: 26,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.event_available, color: Colors.white, size: 14),
                       ),
                     ),
                   ),

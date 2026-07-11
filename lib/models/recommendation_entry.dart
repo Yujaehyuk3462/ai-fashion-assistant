@@ -12,6 +12,27 @@ class RecommendationEntry {
   final String triggerItemId; // 이 추천을 유발한 새 옷의 id
   final DateTime createdAt;
   final bool dismissed;
+  // 자기 평가 루프가 Gemini로 비교 평가한 조합 개수. 루프 도입 전에 저장된
+  // 문서에는 없으므로 nullable — null이면 카드에 평가 문구를 생략한다.
+  final int? evaluatedCount;
+  // 평가한 후보들의 점수(탈락 포함, 평가 순서대로 — 점수 파싱 실패는 0).
+  // 활동 로그 화면이 "후보별 점수: 62 → 85" 타임라인을 그릴 때 쓴다.
+  final List<int> candidateScores;
+  // 일정 기반 선제 추천에서만 채워지는 필드 — 이 추천이 어느 날짜/상황(TPO)
+  // 일정을 위해 준비됐는지. null이면 "새 옷 등록" 계기의 일반 추천이다.
+  final DateTime? targetDate; // 자정 정규화
+  final String? targetTpoTag;
+  // ── 레벨 3: 피드백 학습 ──
+  // 사용자가 이 추천의 날짜/태그에 실제 착장을 기록했을 때의 반응.
+  // 'accepted'(추천대로 입음) | 'rejected_with_alternative'(다른 조합 선택) | null(아직 기록 없음).
+  final String? userChoice;
+  final List<String> userChosenItemIds; // rejected일 때 사용자가 실제로 고른 조합
+  // 이 추천을 생성할 때 과거 불일치 피드백이 실제로 프롬프트에 주입됐는지.
+  // true일 때만 카드에 "지난번 선택을 반영했어요"를 표시한다(거짓 표시 금지).
+  final bool reflectedFeedback;
+  // ── 레벨 4: 실패 대응 ──
+  // 해당 TPO 격식에 딱 맞는 조합이 없어 "가장 가까운 차선"으로 채운 경우.
+  final bool isFallback;
 
   const RecommendationEntry({
     required this.id,
@@ -22,6 +43,14 @@ class RecommendationEntry {
     required this.triggerItemId,
     required this.createdAt,
     this.dismissed = false,
+    this.evaluatedCount,
+    this.candidateScores = const [],
+    this.targetDate,
+    this.targetTpoTag,
+    this.userChoice,
+    this.userChosenItemIds = const [],
+    this.reflectedFeedback = false,
+    this.isFallback = false,
   });
 
   factory RecommendationEntry.fromFirestore(DocumentSnapshot doc) {
@@ -36,6 +65,18 @@ class RecommendationEntry {
       triggerItemId: data['triggerItemId'] as String? ?? '',
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       dismissed: data['dismissed'] as bool? ?? false,
+      evaluatedCount: data['evaluatedCount'] as int?,
+      candidateScores: (data['candidateScores'] as List?)
+              ?.map((e) => (e as num).toInt())
+              .toList() ??
+          const [],
+      targetDate: (data['targetDate'] as Timestamp?)?.toDate(),
+      targetTpoTag: data['targetTpoTag'] as String?,
+      userChoice: data['userChoice'] as String?,
+      userChosenItemIds:
+          (data['userChosenItemIds'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      reflectedFeedback: data['reflectedFeedback'] as bool? ?? false,
+      isFallback: data['isFallback'] as bool? ?? false,
     );
   }
 
@@ -48,5 +89,15 @@ class RecommendationEntry {
         'triggerItemId': triggerItemId,
         'createdAt': FieldValue.serverTimestamp(),
         'dismissed': dismissed,
+        if (evaluatedCount != null) 'evaluatedCount': evaluatedCount,
+        if (candidateScores.isNotEmpty) 'candidateScores': candidateScores,
+        if (targetDate != null)
+          'targetDate': Timestamp.fromDate(
+              DateTime(targetDate!.year, targetDate!.month, targetDate!.day)),
+        if (targetTpoTag != null) 'targetTpoTag': targetTpoTag,
+        if (userChoice != null) 'userChoice': userChoice,
+        if (userChosenItemIds.isNotEmpty) 'userChosenItemIds': userChosenItemIds,
+        if (reflectedFeedback) 'reflectedFeedback': reflectedFeedback,
+        if (isFallback) 'isFallback': isFallback,
       };
 }

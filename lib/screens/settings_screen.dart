@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
 import '../models/user_profile.dart';
 import '../services/firestore_service.dart';
+import 'agent_log_screen.dart';
 import 'body_profile_screen.dart';
 import 'scrap_screen.dart';
 
@@ -18,6 +19,7 @@ const _settingsGroups = [
     'title': '앱 설정',
     'items': [
       {'icon': Icons.bookmark, 'label': '내 스크랩', 'sub': null},
+      {'icon': Icons.smart_toy, 'label': 'AI 비서 활동 내역', 'sub': '에이전트가 한 일 타임라인'},
       {'icon': Icons.smartphone, 'label': '체형 정보', 'sub': null}, // 실시간 프로필 데이터로 대체됨
     ],
   },
@@ -75,6 +77,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const ScrapScreen()),
+    );
+  }
+
+  void _openAgentLog() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AgentLogScreen()),
     );
   }
 
@@ -169,13 +178,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final label = item['label'] as String;
                 final isBodyInfo = label == '체형 정보';
                 final isMyScraps = label == '내 스크랩';
+                final isAgentLog = label == 'AI 비서 활동 내역';
                 final sub = isBodyInfo ? _bodyInfoSummary() : item['sub'] as String?;
                 return Column(
                   children: [
                     InkWell(
                       onTap: isBodyInfo
                           ? _openBodyProfile
-                          : (isMyScraps ? _openScraps : () {}),
+                          : isMyScraps
+                              ? _openScraps
+                              : isAgentLog
+                                  ? _openAgentLog
+                                  : () {},
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

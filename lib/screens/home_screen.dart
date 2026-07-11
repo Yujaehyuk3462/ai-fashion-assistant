@@ -8,7 +8,9 @@ import '../constants/style_tips.dart';
 import '../models/outfit_history_entry.dart';
 import '../models/recommendation_entry.dart';
 import '../models/wardrobe_item.dart';
+import '../services/agent_planner.dart';
 import '../services/firestore_service.dart';
+import 'agent_log_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   final ValueChanged<int> onNavigate;
@@ -91,6 +93,28 @@ class _RecommendationCardBody extends StatelessWidget {
     required this.onOpenFittingRoom,
   });
 
+  // 자기 평가 루프 결과 한 줄. 일정 기반 선제 추천은 "준비해뒀어요" 어투로,
+  // 새 옷 추천은 "선정/찾았어요" 어투로 구분한다.
+  static String _loopSummary(RecommendationEntry entry) {
+    final score = entry.colorScore;
+    if (entry.targetDate != null) {
+      final tpo = entry.targetTpoTag != null ? '[${entry.targetTpoTag}]' : '이 일정';
+      // 레벨 4: 차선 조합은 솔직하게 표시(거짓 만족 금지).
+      if (entry.isFallback) {
+        return '$tpo에 딱 맞는 조합은 없었지만, 옷장에서 가장 가까운 조합을 준비했어요 ($score점)';
+      }
+      // 레벨 3: 과거 피드백이 실제 반영된 경우에만 표시.
+      if (entry.reflectedFeedback) {
+        return '지난번 선택하신 스타일을 반영했어요 ($score점)';
+      }
+      final rel = AgentPlanner.relativeLabel(entry.targetDate!);
+      return '$rel ${entry.targetTpoTag != null ? '[${entry.targetTpoTag}] ' : ''}일정을 위해 코디를 준비해뒀어요 ($score점)';
+    }
+    return (entry.evaluatedCount ?? 0) > 1
+        ? '${entry.evaluatedCount}개 조합을 비교 평가해 $score점 조합을 선정했어요'
+        : '옷장 분석 결과 $score점 조합을 찾았어요';
+  }
+
   // 닫기는 사용자가 직접 트리거한 부가 동작이라, 실패해도 카드가 조금 더
   // 남아있는 정도라 조용히 무시한다(로컬 캐시로 보통 즉시 반영된다).
   void _dismiss() {
@@ -139,10 +163,17 @@ class _RecommendationCardBody extends StatelessWidget {
                       child: const Icon(Icons.auto_awesome, color: AppColors.blue, size: 16),
                     ),
                     const SizedBox(width: 10),
-                    const Expanded(
+                    // 일정 기반 선제 추천(targetDate 있음)은 "왜 이 카드가 떴는지"를
+                    // 제목에서 바로 보여준다 — 예약 cron이 아니라 일정을 관찰한 결과임.
+                    Expanded(
                       child: Text(
-                        '회원님을 위한 추천 코디',
-                        style: TextStyle(
+                        entry.targetDate != null
+                            ? '${AgentPlanner.relativeLabel(entry.targetDate!)}'
+                                '${entry.targetTpoTag != null ? ' [${entry.targetTpoTag}]' : ''} 일정 추천'
+                            : '회원님을 위한 추천 코디',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
                           color: AppColors.textPrimary,
                           fontSize: 14,
                           fontWeight: FontWeight.w800,
@@ -208,6 +239,55 @@ class _RecommendationCardBody extends StatelessWidget {
                     style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.5),
                   ),
                 ],
+                // 자기 평가 루프가 돌았다는 것을 사용자에게 한 줄로 보여준다
+                // (루프 도입 전 문서는 evaluatedCount가 없어 자동 생략).
+                if (entry.evaluatedCount != null && entry.colorScore != null) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.autorenew, color: AppColors.blue, size: 12),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          _loopSummary(entry),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.blue,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                // "방금 한 일 보기" — 카드 하단에서 에이전트 활동 로그로 진입.
+                // 카드 본체 탭(피팅룸 열기)과 겹치지 않게 자체 GestureDetector가
+                // 탭을 소비한다(안쪽 제스처가 우선).
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AgentLogScreen()),
+                  ),
+                  behavior: HitTestBehavior.opaque,
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        'AI 비서가 방금 한 일 보기',
+                        style: TextStyle(
+                          color: AppColors.blue,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      SizedBox(width: 2),
+                      Icon(Icons.arrow_forward, color: AppColors.blue, size: 12),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),

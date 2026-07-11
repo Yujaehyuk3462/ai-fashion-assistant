@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'constants/app_colors.dart';
 import 'models/wardrobe_item.dart';
 import 'screens/login_screen.dart';
@@ -10,8 +13,10 @@ import 'screens/home_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
 import 'screens/coord_board_screen.dart';
+import 'screens/calendar_screen.dart';
 import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/agent_planner.dart';
 import 'services/fitting_job_controller.dart';
 import 'firebase_options.dart';
 
@@ -22,10 +27,23 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  await FirebaseAppCheck.instance.activate(
-    androidProvider: AndroidProvider.debug,
-    appleProvider: AppleProvider.debug,
-  );
+  // 디버그 전용 로컬 검증 경로 — `--dart-define=USE_EMULATOR=true`로 실행하면
+  // 배포된 프로젝트 대신 로컬 Firebase Emulator에 붙어, 로컬 firestore.rules로
+  // 저장 기능을 검증한다. 기본값 false라 일반 빌드/배포에는 전혀 영향 없음.
+  // 안드로이드 에뮬레이터에서 호스트 PC는 10.0.2.2로 접근한다.
+  const useEmulator = bool.fromEnvironment('USE_EMULATOR');
+  if (useEmulator) {
+    FirebaseFirestore.instance.useFirestoreEmulator('10.0.2.2', 8080);
+    await FirebaseAuth.instance.useAuthEmulator('10.0.2.2', 9099);
+  } else {
+    await FirebaseAppCheck.instance.activate(
+      androidProvider: AndroidProvider.debug,
+      appleProvider: AppleProvider.debug,
+    );
+  }
+
+  // 착장 캘린더(table_calendar)의 한국어 월/요일 표기를 위해 로케일 데이터 초기화.
+  await initializeDateFormatting('ko_KR', null);
 
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const AiFashionAssistantApp());
@@ -86,6 +104,17 @@ class _AppShellState extends State<AppShell> {
   // AppShell(탭 전환에도 살아있는 레벨)에서 보관 → 다른 탭으로 이동해도
   // 진행 중인 AI 분석/가상 피팅 작업과 결과가 유지된다.
   final FittingJobController _fittingJob = FittingJobController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 레벨 1 선제 추천: 앱 진입 시 1회, 다가오는 일정을 감지해 백그라운드에서
+    // 미리 추천을 준비한다. 부가 기능이라 실패해도 조용히 무시한다.
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      unawaited(AgentPlanner.runProactiveCheck(uid));
+    }
+  }
 
   @override
   void dispose() {
@@ -184,6 +213,8 @@ class _AppShellState extends State<AppShell> {
       case 3:
         return const CoordBoardScreen();
       case 4:
+        return const CalendarScreen();
+      case 5:
         return const SettingsScreen();
       default:
         return HomeScreen(
@@ -216,6 +247,10 @@ class _BottomNav extends StatelessWidget {
         activeIcon: Icons.dashboard_customize,
         label: '코디보드'),
     _NavItem(
+        icon: Icons.calendar_month_outlined,
+        activeIcon: Icons.calendar_month,
+        label: '캘린더'),
+    _NavItem(
         icon: Icons.settings_outlined,
         activeIcon: Icons.settings,
         label: '설정'),
@@ -245,8 +280,8 @@ class _BottomNav extends StatelessWidget {
                     children: [
                       AnimatedContainer(
                         duration: const Duration(milliseconds: 200),
-                        width: 48,
-                        height: 32,
+                        width: 44,
+                        height: 30,
                         decoration: BoxDecoration(
                           color: isActive
                               ? AppColors.bluePale
@@ -258,14 +293,17 @@ class _BottomNav extends StatelessWidget {
                           color: isActive
                               ? AppColors.blue
                               : AppColors.textPlaceholder,
-                          size: 22,
+                          size: 21,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         item.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.visible,
+                        softWrap: false,
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 10,
                           fontWeight:
                               isActive ? FontWeight.w700 : FontWeight.w500,
                           color: isActive

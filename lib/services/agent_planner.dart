@@ -1,0 +1,426 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import '../constants/tpo_tags.dart';
+import '../models/agent_log_entry.dart';
+import '../models/outfit_calendar_entry.dart';
+import '../models/recommendation_entry.dart';
+import '../models/wardrobe_item.dart';
+import 'firestore_service.dart';
+import 'gemini_service.dart';
+import 'outfit_matcher.dart';
+import 'outfit_self_evaluator.dart';
+
+// 주간 플랜 한 날의 결과 — Gemini가 배정한 조합을 UI 카드로 보여주기 위한 것.
+// Firestore에 바로 저장하지 않고, 사용자가 "이 코디로 확정"을 누른 날만 저장된다.
+class WeeklyPlanDay {
+  final DateTime date;
+  final String tpoTag;
+  final List<WardrobeItem> items;
+  final String reason;
+
+  const WeeklyPlanDay({
+    required this.date,
+    required this.tpoTag,
+    required this.items,
+    required this.reason,
+  });
+}
+
+// 캘린더를 "관찰 대상"으로 삼는 에이전트 로직.
+//  · 레벨 1(선제 추천): 다가오는 예정 태그를 감지해 미리 추천을 준비한다.
+//  · 레벨 2(주간 계획): 일주일 일정을 제약과 함께 한 번에 계획한다.
+class AgentPlanner {
+  static const _proactiveHorizonDays = 3; // 오늘~+3일 예정을 선제 추천 대상으로
+  static const _weeklyHorizonDays = 7;
+
+  static DateTime _todayMidnight() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  // ── 레벨 1: 선제 추천 트리거 (홈 진입 시 1회) ────────────
+  // 오늘~+3일의 'planned' 예정 중 아직 추천이 없는 날에 대해, TPO 격식에 맞는
+  // 조합을 자기 평가 루프로 골라 미리 추천으로 저장한다. 부가 기능이라 어느
+  // 단계에서 실패하든 조용히 무시한다.
+  static Future<void> runProactiveCheck(String uid) async {
+    try {
+      final today = _todayMidnight();
+      final horizon = today.add(const Duration(days: _proactiveHorizonDays));
+      final entries = await FirestoreService.calendarEntriesForRange(uid, today, horizon);
+      final planned = entries.where((e) => e.isPlanned).toList();
+      if (planned.isEmpty) return;
+      debugPrint('[PLAN] 선제 추천 체크: 다가오는 예정 ${planned.length}건');
+
+      final wardrobe = await FirestoreService.wardrobeStream().first;
+      final usable = wardrobe.where((i) => i.attributes != null).toList();
+      if (usable.length < 2) return;
+
+      for (final plan in planned) {
+        // 이미 이 날짜용 추천이 있으면 스킵(중복 방지).
+        if (await FirestoreService.hasRecommendationForDateSilently(uid, plan.date)) {
+          debugPrint('[PLAN] ${_dateLabel(plan.date)} 추천 이미 존재 — 스킵');
+          continue;
+        }
+        await _prepareRecommendationFor(uid, plan, usable);
+      }
+    } catch (e) {
+      debugPrint('[PLAN] 선제 추천 체크 예외로 중단: $e');
+    }
+  }
+
+  // Gemini 색상 점수가 이 값 미만이면 "격식은 됐어도 조합 자체가 약한" 것으로
+  // 보고 차선(fallback) 문구를 쓴다(레벨 4의 "전부 낮은 점수" 케이스).
+  static const _lowScoreFloor = 60;
+
+  static Future<void> _prepareRecommendationFor(
+    String uid,
+    OutfitCalendarEntry plan,
+    List<WardrobeItem> wardrobe,
+  ) async {
+    final tag = TpoTags.byLabel(plan.tpoTag);
+    final wardrobeById = {for (final i in wardrobe) i.id: i};
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeScheduleDetected,
+        message: '${_relativeLabel(plan.date)} [${plan.tpoTag}] 일정을 감지했습니다',
+        relatedDocId: plan.id,
+      ),
+    ));
+
+    final match = OutfitMatcher.findForTpo(
+      wardrobe: wardrobe,
+      formalityHint: tag.formalityHint,
+    );
+    // 레벨 4: 조합 자체가 불가 — 조용히 넘기지 않고 무엇이 부족한지 로그로 남긴다.
+    if (match.candidates.isEmpty) {
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeScheduleDetected,
+          message: '[${plan.tpoTag}] 일정용 조합을 찾지 못했습니다 — ${match.shortfall ?? '옷장이 부족해요'}',
+          relatedDocId: plan.id,
+        ),
+      ));
+      return;
+    }
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeCandidatesGenerated,
+        message: match.isFallback
+            ? '[${plan.tpoTag}] 격식에 딱 맞는 조합이 없어 가장 가까운 후보 ${match.candidates.length}개를 검토합니다'
+            : '옷장에서 ${tag.formalityHint} 조합 ${match.candidates.length}개를 검토했습니다',
+        relatedDocId: plan.id,
+      ),
+    ));
+
+    // 레벨 3: 과거 불일치 피드백을 프롬프트에 주입(있을 때만). 실제 주입된
+    // 경우에만 reflectedFeedback=true로 남겨 카드에 "반영했어요"를 표시한다.
+    final feedbackText = await _buildFeedbackText(uid, wardrobeById, tpo: plan.tpoTag);
+    if (feedbackText != null) {
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeCandidatesGenerated,
+          message: '지난 [${plan.tpoTag}] 선택 피드백을 반영해 조합을 평가합니다',
+          relatedDocId: plan.id,
+        ),
+      ));
+    }
+
+    final outcome = await OutfitSelfEvaluator.run(
+      match.candidates,
+      recentHistoryText: feedbackText,
+      onStep: ({required index, required total, score, required passed, required wasError}) {
+        final String message;
+        if (wasError) {
+          message = '후보 ${index + 1} 평가: Gemini 호출 실패로 건너뛰고 다음 후보 검토';
+        } else {
+          final scoreText = score != null ? '$score점' : '점수 파싱 실패';
+          final verdict = passed
+              ? '기준(${OutfitSelfEvaluator.threshold}점) 통과, 채택'
+              : (index < total - 1 ? '기준 미달로 다음 후보 검토' : '기준 미달');
+          message = '후보 ${index + 1} 평가: $scoreText — $verdict';
+        }
+        unawaited(FirestoreService.addAgentLogSilently(
+          uid,
+          AgentLogEntry(
+            id: '',
+            eventType: AgentLogEntry.typeCandidateEvaluated,
+            message: message,
+            relatedDocId: plan.id,
+          ),
+        ));
+      },
+    );
+    if (outcome == null) return;
+
+    // 매처가 차선을 줬거나(격식 부적합) Gemini 점수도 낮으면 fallback으로 표기.
+    final isFallback =
+        match.isFallback || (outcome.bestScore != null && outcome.bestScore! < _lowScoreFloor);
+
+    final entry = RecommendationEntry(
+      id: '',
+      itemIds: outcome.bestMatch.items.map((i) => i.id).toList(),
+      itemSummaries: outcome.bestMatch.items
+          .map((i) => '${i.category}: ${i.attributes!.toPromptLine()}')
+          .toList(),
+      colorScore: outcome.bestScore,
+      summaryText: outcome.summaryText,
+      triggerItemId: '', // 새 옷이 아니라 일정이 트리거
+      createdAt: DateTime.now(),
+      evaluatedCount: outcome.evaluatedCount,
+      candidateScores: outcome.candidateScores,
+      targetDate: plan.date,
+      targetTpoTag: plan.tpoTag,
+      reflectedFeedback: feedbackText != null,
+      isFallback: isFallback,
+    );
+    final recId = await FirestoreService.addRecommendationSilently(uid, entry);
+    if (recId == null) return;
+
+    final scorePhrase = outcome.bestScore != null ? '${outcome.bestScore}점 조합을' : '조합을';
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeRecommendationRegistered,
+        message: isFallback
+            ? '[${plan.tpoTag}] 조건에 맞는 조합이 부족합니다 — 차선책 $scorePhrase 제안합니다'
+            : '${_relativeLabel(plan.date)} [${plan.tpoTag}] 일정을 위해 $scorePhrase 준비했습니다',
+        relatedDocId: plan.id,
+      ),
+    ));
+  }
+
+  // ── 레벨 3: 피드백 감지 (캘린더 착장 기록 시 호출) ──────────
+  // 같은 날짜+TPO의 선제 추천이 있었는지 보고, 사용자가 저장한 조합이
+  // 추천과 같으면 accepted, 다르면 rejected_with_alternative로 기록한다.
+  // 이 불일치가 다음 추천 프롬프트에 취향 피드백으로 주입된다.
+  static Future<void> detectFeedbackForCalendarEntry(
+      String uid, OutfitCalendarEntry entry) async {
+    try {
+      if (entry.isPlanned || entry.itemIds.isEmpty) return; // 예정/빈 기록은 대상 아님
+      final recs = await FirestoreService.recommendationsForDateSilently(uid, entry.date);
+      final matching = recs.where((r) => r.targetTpoTag == entry.tpoTag).toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      if (matching.isEmpty) return;
+      final rec = matching.first;
+      if (rec.userChoice != null) return; // 이미 반응이 기록됨
+
+      final recSet = rec.itemIds.toSet();
+      final chosenSet = entry.itemIds.toSet();
+      final accepted = recSet.length == chosenSet.length && recSet.containsAll(chosenSet);
+      if (accepted) {
+        await FirestoreService.updateRecommendationFeedbackSilently(uid, rec.id,
+            userChoice: 'accepted');
+        unawaited(FirestoreService.addAgentLogSilently(
+          uid,
+          AgentLogEntry(
+            id: '',
+            eventType: AgentLogEntry.typeCalendarLogged,
+            message: '추천 코디가 채택되었습니다 ([${entry.tpoTag}])',
+            relatedDocId: rec.id,
+          ),
+        ));
+      } else {
+        await FirestoreService.updateRecommendationFeedbackSilently(uid, rec.id,
+            userChoice: 'rejected_with_alternative', userChosenItemIds: entry.itemIds);
+        unawaited(FirestoreService.addAgentLogSilently(
+          uid,
+          AgentLogEntry(
+            id: '',
+            eventType: AgentLogEntry.typeCalendarLogged,
+            message: '추천 대신 다른 조합을 선택하셨네요 ([${entry.tpoTag}]) — 다음 추천에 반영하겠습니다',
+            relatedDocId: rec.id,
+          ),
+        ));
+      }
+    } catch (e) {
+      debugPrint('[FEEDBACK] 감지 실패: $e');
+    }
+  }
+
+  // 최근 불일치 피드백을 RAG 프롬프트용 텍스트로 만든다. 같은 TPO를 앞으로
+  // 정렬한다. 피드백이 없으면 null(그 경우 카드에 반영 문구를 띄우지 않음).
+  static Future<String?> _buildFeedbackText(
+    String uid,
+    Map<String, WardrobeItem> wardrobeById, {
+    String? tpo,
+  }) async {
+    final feedback = await FirestoreService.getRecentFeedbackSilently(uid, limit: 5);
+    if (feedback.isEmpty) return null;
+    feedback.sort((a, b) {
+      final ai = a.targetTpoTag == tpo ? 0 : 1;
+      final bi = b.targetTpoTag == tpo ? 0 : 1;
+      return ai.compareTo(bi);
+    });
+
+    String fromSummaries(List<String> summaries) => summaries.map((s) {
+          final idx = s.indexOf(':');
+          if (idx < 0) return s.trim();
+          final cat = s.substring(0, idx).trim();
+          final color = s.substring(idx + 1).trim().split('/').first.trim();
+          return color.isEmpty ? cat : '$color $cat';
+        }).join('+');
+    String fromIds(List<String> ids) => ids
+        .map((id) => wardrobeById[id])
+        .whereType<WardrobeItem>()
+        .map((w) {
+          final c = w.attributes?.color ?? '';
+          return c.isEmpty ? w.category : '$c ${w.category}';
+        })
+        .join('+');
+
+    final lines = <String>['취향 피드백(반드시 반영할 것):'];
+    for (final f in feedback) {
+      final chosen = fromIds(f.userChosenItemIds);
+      if (chosen.isEmpty) continue;
+      lines.add(
+          '- 이 사용자는 [${f.targetTpoTag ?? '일상'}] 상황에서 에이전트가 제안한 (${fromSummaries(f.itemSummaries)}) 대신 ($chosen)를 선택한 적이 있음. 이런 취향 차이를 반영할 것.');
+    }
+    return lines.length > 1 ? lines.join('\n') : null;
+  }
+
+  // ── 레벨 2: 주간 코디 플랜 (버튼 트리거) ──────────────────
+  // 오늘부터 7일의 일정(예정 태그 없으면 '일상')과 옷장 전체를 Gemini에 단
+  // 1회 호출해 제약(중복 회피·격식 배분)을 고려한 날짜별 조합을 받는다.
+  // 결과는 UI 카드로 반환하고, 저장은 사용자가 날짜별로 확정할 때 이뤄진다.
+  // 진행 불가/실패는 조용히 넘기지 않고 StateError로 사유를 던져 UI가 안내한다.
+  static Future<List<WeeklyPlanDay>> generateWeeklyPlan(String uid) async {
+    final wardrobe = await FirestoreService.wardrobeStream().first;
+    final usable = wardrobe.where((i) => i.attributes != null).toList();
+    if (usable.length < 2) {
+      throw StateError('플랜을 세우려면 속성이 분석된 옷이 2벌 이상 필요해요.');
+    }
+    final byId = {for (final i in usable) i.id: i};
+
+    final today = _todayMidnight();
+    final horizon = today.add(const Duration(days: _weeklyHorizonDays - 1));
+    final calendar = await FirestoreService.calendarEntriesForRange(uid, today, horizon);
+    // 날짜별 예정 태그 맵(있으면 그 태그, 없으면 '일상').
+    final plannedByDate = <String, String>{};
+    for (final e in calendar) {
+      if (e.isPlanned) plannedByDate[_dateKey(e.date)] = e.tpoTag;
+    }
+
+    // 7일 스케줄 구성.
+    final days = List.generate(
+        _weeklyHorizonDays, (i) => today.add(Duration(days: i)));
+    final scheduleLines = <String>[];
+    final tpoByDate = <String, String>{};
+    for (var i = 0; i < days.length; i++) {
+      final d = days[i];
+      final key = _dateKey(d);
+      final tpo = plannedByDate[key] ?? '일상';
+      tpoByDate[key] = tpo;
+      final formality = TpoTags.byLabel(tpo).formalityHint;
+      scheduleLines.add('${i + 1}. $key (${_weekdayKo(d)}) — $tpo — 요구 격식: $formality');
+    }
+
+    final catalog = usable
+        .map((i) => '- id=${i.id} | ${i.category} | ${i.attributes!.toPromptLine()}')
+        .join('\n');
+
+    // 레벨 3: 최근 불일치 피드백을 주간 플랜 프롬프트에도 주입한다.
+    final feedbackText = await _buildFeedbackText(uid, byId);
+
+    debugPrint('[PLAN] 주간 플랜 요청: ${days.length}일, 옷장 ${usable.length}벌'
+        '${feedbackText != null ? ' (피드백 반영)' : ''}');
+    String raw;
+    try {
+      raw = await GeminiService.withTextModelFallback(
+        (model) => GeminiService.planWeeklyOutfits(
+          scheduleLines: scheduleLines.join('\n'),
+          wardrobeCatalog: catalog,
+          recentFeedbackText: feedbackText,
+          model: model,
+        ),
+      );
+    } catch (e) {
+      debugPrint('[PLAN] 주간 플랜 Gemini 실패: $e');
+      throw StateError('플랜 생성에 실패했어요. 잠시 후 다시 시도해주세요.');
+    }
+
+    final parsed = _parsePlanArray(raw);
+    final result = <WeeklyPlanDay>[];
+    for (final row in parsed) {
+      final dateStr = row['date'] as String?;
+      final rawIds = (row['itemIds'] as List?)?.map((e) => e.toString()) ?? const [];
+      // 옷장에 실제로 있는 id만 남긴다(모델이 지어낸 id 방어).
+      final items = rawIds.map((id) => byId[id]).whereType<WardrobeItem>().toList();
+      if (dateStr == null || items.isEmpty) continue;
+      final date = DateTime.tryParse(dateStr);
+      if (date == null) continue;
+      final key = _dateKey(date);
+      result.add(WeeklyPlanDay(
+        date: DateTime(date.year, date.month, date.day),
+        tpoTag: tpoByDate[key] ?? '일상',
+        items: items,
+        reason: (row['reason'] as String?)?.trim() ?? '',
+      ));
+    }
+    if (result.isEmpty) {
+      throw StateError('플랜 응답을 해석하지 못했어요. 잠시 후 다시 시도해주세요.');
+    }
+
+    unawaited(FirestoreService.addAgentLogSilently(
+      uid,
+      AgentLogEntry(
+        id: '',
+        eventType: AgentLogEntry.typeWeeklyPlanned,
+        message: '주간 플랜을 수립했습니다 — ${result.length}일 일정에 대해 중복 없이 조합을 배분했습니다',
+      ),
+    ));
+    return result;
+  }
+
+  // JSON 배열 파싱 — _parseJsonObject(GeminiService)의 배열판. 코드블록 펜스를
+  // 벗기고 첫 '['~마지막 ']' 구간만 안전하게 디코드한다.
+  static List<Map<String, dynamic>> _parsePlanArray(String text) {
+    var cleaned = text.trim();
+    cleaned = cleaned
+        .replaceAll(RegExp(r'```json\s*'), '')
+        .replaceAll(RegExp(r'```\s*'), '');
+    final start = cleaned.indexOf('[');
+    final end = cleaned.lastIndexOf(']');
+    if (start == -1 || end == -1 || end < start) {
+      debugPrint('[PLAN] JSON 배열을 찾지 못함: $text');
+      return const [];
+    }
+    try {
+      final decoded = jsonDecode(cleaned.substring(start, end + 1)) as List;
+      return decoded.whereType<Map<String, dynamic>>().toList();
+    } catch (e) {
+      debugPrint('[PLAN] JSON 파싱 실패: $e');
+      return const [];
+    }
+  }
+
+  static String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  static String _dateLabel(DateTime d) => '${d.month}/${d.day}';
+
+  static const _weekdays = ['월', '화', '수', '목', '금', '토', '일'];
+  static String _weekdayKo(DateTime d) => _weekdays[d.weekday - 1];
+
+  // "오늘/내일/모레/N일 뒤" 상대 표기.
+  static String _relativeLabel(DateTime date) {
+    final today = _todayMidnight();
+    final diff = DateTime(date.year, date.month, date.day).difference(today).inDays;
+    if (diff <= 0) return '오늘';
+    if (diff == 1) return '내일';
+    if (diff == 2) return '모레';
+    return '$diff일 뒤';
+  }
+
+  // 홈 추천 카드가 targetDate 문구를 만들 때 재사용하는 공개 헬퍼.
+  static String relativeLabel(DateTime date) => _relativeLabel(date);
+}
