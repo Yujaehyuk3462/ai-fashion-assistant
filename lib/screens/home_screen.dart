@@ -178,18 +178,20 @@ class _RecommendationCardBody extends StatelessWidget {
                     height: 64,
                     child: Row(
                       children: matchedItems
-                          .map((item) => Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: CachedNetworkImage(
-                                    imageUrl: item.cutoutImageUrl ?? item.imageUrl,
-                                    width: 64,
-                                    height: 64,
-                                    fit: BoxFit.cover,
-                                    placeholder: (_, __) => Container(color: AppColors.background),
-                                    errorWidget: (_, __, ___) =>
-                                        Container(color: AppColors.background),
+                          .map((item) => Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: CachedNetworkImage(
+                                      imageUrl: item.cutoutImageUrl ?? item.imageUrl,
+                                      width: double.infinity,
+                                      height: 64,
+                                      fit: BoxFit.cover,
+                                      placeholder: (_, __) => Container(color: AppColors.background),
+                                      errorWidget: (_, __, ___) =>
+                                          Container(color: AppColors.background),
+                                    ),
                                   ),
                                 ),
                               ))
