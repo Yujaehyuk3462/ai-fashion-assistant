@@ -1,8 +1,11 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../constants/style_tips.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
@@ -43,6 +46,16 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   // 쓰이므로, 코디 분석 버튼과 상관없이 화면 진입 시 바로 불러온다.
   UserProfile? _userProfile;
 
+  // ── 로딩 중 순환 문구: 상태 안내 대신 실용적인 패션 팁을 보여준다 ──
+  // 팁 배열 자체는 lib/constants/style_tips.dart에 공용으로 뽑혀있다
+  // (홈 화면 배너와 공유). 결과 카드 안 분석/피팅 영역이 각자
+  // analysisStyleTips/fittingStyleTips를 직접 참조해 독립적으로 순환한다.
+  Timer? _loadingTextTimer;
+  int _loadingTextIndex = 0;
+
+  // ── 가상 피팅 캐시 배지 접기/펼치기 ──────────────────────
+  bool _showCacheBadge = false;
+
   @override
   void initState() {
     super.initState();
@@ -63,11 +76,35 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   void dispose() {
     widget.jobController.removeListener(_onJobChanged);
     _scrollController.dispose();
+    _loadingTextTimer?.cancel();
     super.dispose();
   }
 
   void _onJobChanged() {
+    _syncLoadingTextTimer();
     if (mounted) setState(() {});
+  }
+
+  // isAnalyzing/isGeneratingFitting 중 하나라도 false→true로 바뀌는 순간
+  // 타이머를 시작하고, 둘 다 false가 되면 즉시 취소 + 인덱스 리셋한다.
+  // dispose()에서도 별도로 취소하므로 화면을 벗어나도 타이머가 새지 않는다.
+  // 인덱스는 특정 리스트 길이에 종속시키지 않는 순수 카운터로 두고, 분석/피팅
+  // 영역이 각자 자기 리스트 길이로 나머지 연산을 해서 독립적으로 순환한다
+  // (결과 카드 안에서 두 영역이 동시에 로딩 상태를 보일 수 있으므로).
+  void _syncLoadingTextTimer() {
+    final isBusy = widget.jobController.isAnalyzing || widget.jobController.isGeneratingFitting;
+    if (isBusy && _loadingTextTimer == null) {
+      // 매번 첫 문구부터 똑같이 시작하면 반복 사용 시 지루하므로 랜덤 시작점에서 순환한다.
+      _loadingTextIndex = math.Random().nextInt(1000);
+      _loadingTextTimer = Timer.periodic(const Duration(milliseconds: 1800), (_) {
+        if (!mounted) return;
+        setState(() => _loadingTextIndex++);
+      });
+    } else if (!isBusy && _loadingTextTimer != null) {
+      _loadingTextTimer!.cancel();
+      _loadingTextTimer = null;
+      _loadingTextIndex = 0;
+    }
   }
 
   // ── 점수 파싱 헬퍼 ──────────────────────────────────────
@@ -106,15 +143,11 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
       widget.selectedItems.values.any((v) => v != null) &&
       !widget.jobController.isBusy;
 
-  // 분석 텍스트가 스트리밍으로 들어오기 시작하면 전체 화면 오버레이를 걷어내고
-  // 결과 카드가 실시간으로 채워지는 모습을 그대로 보여준다.
+  // 분석 텍스트가 스트리밍으로 들어오기 시작했는지 — 결과 카드 안
+  // 분석 영역에서 로딩 팁 대신 실제 텍스트를 보여줄 시점을 가른다.
   bool get _isStreamingAnalysis =>
       widget.jobController.isAnalyzing &&
       (widget.jobController.analysisResult?.isNotEmpty ?? false);
-
-  bool get _shouldBlockWithOverlay =>
-      (widget.jobController.isAnalyzing && !_isStreamingAnalysis) ||
-      widget.jobController.isGeneratingFitting;
 
   void _scrollToResult() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -179,6 +212,10 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     final selectedList = widget.selectedItems.values.whereType<WardrobeItem>().toList();
     final userPhoto = widget.userPhoto!;
 
+    // 새로 생성/조회할 때마다 캐시 배지는 접힌 기본 상태로 되돌린다 —
+    // 시연 시 캐시 즉시 로딩이 매번 깔끔하게 보이도록.
+    setState(() => _showCacheBadge = false);
+
     await widget.jobController.generateFitting(
       userPhoto: userPhoto,
       clothingItems: selectedList,
@@ -202,6 +239,19 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     }
     setState(() => _mockFittingImageUrl ??= userPhoto.imageUrl);
     _scrollToResult();
+  }
+
+  // ── 통합 실행: 코디 분석 + (내 사진이 있으면) 가상 피팅을 동시에 진행 ──
+  // 서로 독립적인 API 호출이라 순차로 기다릴 필요가 없다. 한쪽이 실패해도
+  // 다른 쪽 결과·에러 처리에 영향을 주지 않도록 각자의 기존 에러 처리
+  // (_analyze/_generateFitting 내부의 스낵바)를 그대로 둔 채 병렬로만 묶는다.
+  Future<void> _analyzeAndFit() async {
+    if (!_canAnalyze) return;
+    if (widget.userPhoto != null) {
+      await Future.wait([_analyze(), _generateFitting()]);
+    } else {
+      await _analyze();
+    }
   }
 
   void _showPhotoPicker() {
@@ -240,48 +290,47 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
+    // 전체 화면을 덮는 오버레이는 없다 — 분석/피팅이 진행 중이어도 위쪽 슬롯은
+    // 계속 조작 가능하고, 로딩 상태는 아래 결과 카드 안에서 영역별로 보여준다.
+    return Column(
       children: [
-        Column(
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: SingleChildScrollView(
-                controller: _scrollController,
-                padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildStepCard(
-                      number: '1',
-                      title: '내 사진 선택',
-                      subtitle: '옷장의 전신 코디 사진을 선택해 주세요',
-                      child: _buildPhotoSlot(),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildStepCard(
-                      number: '2',
-                      title: '코디 선택',
-                      subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
-                      child: _buildClothingSection(),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildFitPreview(),
-                    const SizedBox(height: 24),
-                    _buildActionButtons(),
-                    const SizedBox(height: 20),
-                    (widget.jobController.analysisResult != null ||
-                            widget.jobController.fittingImage != null ||
-                            widget.jobController.fittingImageUrl != null)
-                        ? _buildResultCard()
-                        : _buildResultPlaceholder(),
-                  ],
+        _buildHeader(),
+        Expanded(
+          child: SingleChildScrollView(
+            controller: _scrollController,
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildStepCard(
+                  number: '1',
+                  title: '내 사진 선택',
+                  subtitle: '옷장의 전신 코디 사진을 선택해 주세요',
+                  child: _buildPhotoSlot(),
                 ),
-              ),
+                const SizedBox(height: 16),
+                _buildStepCard(
+                  number: '2',
+                  title: '코디 선택',
+                  subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
+                  child: _buildClothingSection(),
+                ),
+                const SizedBox(height: 16),
+                _buildFitPreview(),
+                const SizedBox(height: 24),
+                _buildActionButtons(),
+                const SizedBox(height: 20),
+                (widget.jobController.analysisResult != null ||
+                        widget.jobController.fittingImage != null ||
+                        widget.jobController.fittingImageUrl != null ||
+                        widget.jobController.isAnalyzing ||
+                        widget.jobController.isGeneratingFitting)
+                    ? _buildResultCard()
+                    : _buildResultPlaceholder(),
+              ],
             ),
-          ],
+          ),
         ),
-        if (_shouldBlockWithOverlay) _buildAnalyzingOverlay(isFitting: widget.jobController.isGeneratingFitting),
       ],
     );
   }
@@ -731,82 +780,42 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     }
   }
 
-  // ── 액션 버튼 영역 (분석 + 가상 피팅) ───────────────────
+  // ── 액션 버튼 (분석 + 가상 피팅 통합 원클릭) ────────────
   Widget _buildActionButtons() {
-    return Column(
-      children: [
-        // AI 코디 분석 버튼
-        GestureDetector(
-          onTap: _canAnalyze ? _analyze : null,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(
-              color: _canAnalyze ? AppColors.navy : AppColors.textDisabled,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: _canAnalyze
-                  ? [BoxShadow(
-                      color: AppColors.navy.withValues(alpha: 0.3),
-                      blurRadius: 16,
-                      offset: const Offset(0, 6))]
-                  : [],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.auto_awesome, color: Colors.white, size: 20),
-                const SizedBox(width: 10),
-                Text(
-                  _canAnalyze ? 'AI 코디 분석하기' : '코디 아이템을 먼저 선택해 주세요',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800),
-                ),
-              ],
-            ),
-          ),
+    final buttonLabel = !_canAnalyze
+        ? '코디 아이템을 먼저 선택해 주세요'
+        : (widget.userPhoto != null ? 'AI 코디 분석 + 가상 피팅' : 'AI 코디 분석하기');
+    return GestureDetector(
+      onTap: _canAnalyze ? _analyzeAndFit : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        decoration: BoxDecoration(
+          color: _canAnalyze ? AppColors.navy : AppColors.textDisabled,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: _canAnalyze
+              ? [BoxShadow(
+                  color: AppColors.navy.withValues(alpha: 0.3),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6))]
+              : [],
         ),
-        const SizedBox(height: 10),
-        // AI 가상 피팅 이미지 생성 버튼
-        GestureDetector(
-          onTap: _canGenerateFitting ? _generateFitting : null,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            decoration: BoxDecoration(
-              color: _canGenerateFitting
-                  ? const Color(0xFF4A5568)
-                  : AppColors.textDisabled,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: _canGenerateFitting
-                  ? [BoxShadow(
-                      color: const Color(0xFF4A5568).withValues(alpha: 0.3),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4))]
-                  : [],
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.auto_awesome, color: Colors.white, size: 20),
+            const SizedBox(width: 10),
+            Text(
+              buttonLabel,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.image_search, color: Colors.white, size: 18),
-                const SizedBox(width: 10),
-                Text(
-                  _canGenerateFitting
-                      ? 'AI 가상 피팅 이미지 생성'
-                      : '내 사진을 선택하면 가상 피팅이 가능합니다',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -875,6 +884,8 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     final isFittingFromCache = widget.jobController.isFittingFromCache;
     final hasRealFittingResult = fittingImage != null || fittingImageUrl != null;
     final analysisResult = widget.jobController.analysisResult;
+    final isAnalyzing = widget.jobController.isAnalyzing;
+    final isGeneratingFitting = widget.jobController.isGeneratingFitting;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -950,26 +961,47 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                               ],
                             ),
                           ),
+                          // 데모 녹화 시 캐시 즉시 로딩을 깔끔하게 보이기 위해 배지는
+                          // 기본 접힘 상태 — "펼치기"를 탭해야만 "저장된 결과"가 보인다.
                           if (isFittingFromCache) ...[
                             const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.5),
-                                  borderRadius: BorderRadius.circular(8)),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.save_outlined, color: Colors.white, size: 12),
-                                  SizedBox(width: 5),
-                                  Text('저장된 결과',
+                            if (_showCacheBadge)
+                              GestureDetector(
+                                onTap: () => setState(() => _showCacheBadge = false),
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                      color: Colors.black.withValues(alpha: 0.5),
+                                      borderRadius: BorderRadius.circular(8)),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.save_outlined, color: Colors.white, size: 12),
+                                      SizedBox(width: 5),
+                                      Text('저장된 결과',
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700)),
+                                    ],
+                                  ),
+                                ),
+                              )
+                            else
+                              GestureDetector(
+                                onTap: () => setState(() => _showCacheBadge = true),
+                                child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                  child: const Text('펼치기',
                                       style: TextStyle(
-                                          color: Colors.white,
+                                          color: Colors.white70,
                                           fontSize: 11,
-                                          fontWeight: FontWeight.w700)),
-                                ],
+                                          fontWeight: FontWeight.w600,
+                                          decoration: TextDecoration.underline)),
+                                ),
                               ),
-                            ),
                           ],
                         ],
                       ),
@@ -1006,9 +1038,36 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                   ],
                 ),
               ),
+            )
+          else if (isGeneratingFitting)
+            // 아직 이미지는 없지만 생성 중 — 같은 자리에 순환 팁을 보여주고,
+            // 완료되면 위 분기(hasRealFittingResult)로 자연스럽게 전환된다.
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              child: Container(
+                width: double.infinity,
+                height: 320,
+                color: AppColors.background,
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                child: Center(
+                  child: Text(
+                    fittingStyleTips[_loadingTextIndex % fittingStyleTips.length],
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        height: 1.6),
+                  ),
+                ),
+              ),
             ),
-          // 캐시된 결과일 때 강제로 새로 생성할 수 있는 버튼
-          if (isFittingFromCache)
+          // 피팅 결과(캐시든 신규든)가 있으면 강제로 다시 생성할 수 있는 버튼.
+          // 통합 버튼(_analyzeAndFit)은 최초 1회 실행 전용이라, 재생성은
+          // 여기 하나로만 남긴다.
+          if (hasRealFittingResult)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
               child: GestureDetector(
@@ -1034,8 +1093,9 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                 ),
               ),
             ),
-          // 분석 텍스트
-          if (analysisResult != null)
+          // 분석 텍스트 — 결과가 있거나, 아직 없어도 분석이 진행 중이면
+          // (스트리밍 시작 전 짧은 순간) 이 영역 자체는 미리 보여준다.
+          if (analysisResult != null || isAnalyzing)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
               child: Column(
@@ -1071,6 +1131,18 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                   const SizedBox(height: 14),
                   Container(height: 1, color: AppColors.border),
                   const SizedBox(height: 16),
+                  if (analysisResult == null)
+                    // 스트리밍이 아직 첫 글자도 안 왔을 때 — 순환 팁으로 대체.
+                    // 텍스트가 들어오기 시작하면 이 분기 자체가 사라지고
+                    // 아래 실제 결과 분기로 자연스럽게 전환된다.
+                    Text(
+                      analysisStyleTips[_loadingTextIndex % analysisStyleTips.length],
+                      style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 14,
+                          height: 1.8),
+                    )
+                  else ...[
                   // ── 컬러 조합 점수 배지 ──────────────────────────
                   Builder(builder: (context) {
                     final score = _parseScore(analysisResult);
@@ -1220,6 +1292,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       ),
                     ],
                   ),
+                  ],
                 ],
               ),
             ),
@@ -1228,53 +1301,6 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
-  // ── 분석/생성 중 오버레이 ────────────────────────────────
-  Widget _buildAnalyzingOverlay({bool isFitting = false}) {
-    return Container(
-      color: Colors.black.withValues(alpha: 0.6),
-      child: Center(
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 40),
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 36),
-          decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(20)),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                    color: AppColors.navy.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(20)),
-                child: const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: CircularProgressIndicator(
-                      color: AppColors.navy, strokeWidth: 2.5),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                isFitting
-                    ? 'AI 가상 피팅 이미지를\n생성 중입니다...'
-                    : 'AI 코디 분석을\n진행 중입니다...',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    height: 1.5),
-              ),
-              const SizedBox(height: 6),
-              const Text('Gemini Fashion Advisor가 분석 중입니다',
-                  style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 // ── 전체 화면 이미지 뷰어 위젯 ───────────────────────────

@@ -60,8 +60,9 @@ class _BodyProfileScreenState extends State<BodyProfileScreen> {
         _bodyType = profile.bodyType;
         _preferredStyles.addAll(profile.preferredStyles);
       }
-    } catch (_) {
+    } catch (e) {
       // 로드 실패 시 빈 폼으로 시작 — 저장할 때 다시 시도하면 된다.
+      debugPrint('[체형프로필조회] 실패: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

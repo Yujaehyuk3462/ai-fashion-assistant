@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
+import '../models/outfit_history_entry.dart';
+import '../models/recommendation_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 
@@ -86,7 +89,7 @@ class FirestoreService {
   }
 
   static Future<void> saveUserProfile(String uid, UserProfile profile) async {
-    await _db.collection(_usersCol).doc(uid).set(profile.toFirestore());
+    await _db.collection(_usersCol).doc(uid).set( profile.toFirestore());
   }
 
   // 분석 시점의 프로필 조회는 어디까지나 속도 최적화(사진 대체)를 위한
@@ -95,8 +98,101 @@ class FirestoreService {
   static Future<UserProfile?> getUserProfileSilently(String uid) async {
     try {
       return await getUserProfile(uid);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[프로필조회] 실패: $e');
       return null;
     }
+  }
+
+  // ── 코디 사용 이력 (개인화 추천용 축적 데이터, 본인만 접근 가능) ──
+  static const _historyCol = 'history';
+
+  static Future<void> addHistoryEntry(String uid, OutfitHistoryEntry entry) async {
+    await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_historyCol)
+        .add(entry.toFirestore());
+  }
+
+  // 이력 기록은 분석/피팅/코디보드 같은 핵심 기능의 부가 작업일 뿐이므로,
+  // 실패해도 조용히 무시한다 (getUserProfileSilently와 동일한 패턴).
+  static Future<void> addHistoryEntrySilently(String uid, OutfitHistoryEntry entry) async {
+    try {
+      await addHistoryEntry(uid, entry);
+    } catch (e) {
+      // 무시 — 사용자가 방금 완료한 분석/피팅/보드 작업 자체는 이미 성공한 상태다.
+      debugPrint('[히스토리저장] 실패: $e');
+    }
+  }
+
+  static Future<List<OutfitHistoryEntry>> getRecentHistorySilently(
+    String uid, {
+    int limit = 50,
+  }) async {
+    try {
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_historyCol)
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
+          .get();
+      return snapshot.docs
+          .map((doc) => OutfitHistoryEntry.fromFirestore(doc.data()))
+          .toList();
+    } catch (e) {
+      debugPrint('[히스토리조회] 실패: $e');
+      return [];
+    }
+  }
+
+  // ── 능동 추천 (새 옷 등록을 계기로 백그라운드 생성, 본인만 접근 가능) ──
+  static const _recommendationsCol = 'recommendations';
+
+  static Future<String> addRecommendation(String uid, RecommendationEntry entry) async {
+    final doc = await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_recommendationsCol)
+        .add(entry.toFirestore());
+    return doc.id;
+  }
+
+  // 추천 생성은 옷 등록의 부가 기능이므로, 실패해도 조용히 무시한다
+  // (addHistoryEntrySilently와 동일한 패턴). 파이프라인이 어디서 끊기는지
+  // 진단할 수 있도록 성공/실패를 로그로 남긴다.
+  static Future<String?> addRecommendationSilently(String uid, RecommendationEntry entry) async {
+    try {
+      final docId = await addRecommendation(uid, entry);
+      debugPrint('[RECOMMEND] 저장 완료: docId=$docId');
+      return docId;
+    } catch (e) {
+      debugPrint('[RECOMMEND] 저장 실패: $e');
+      return null;
+    }
+  }
+
+  // dismissed == false인 것 중 최신 1건만 — 홈 화면 카드는 항상 최대 1개만 노출한다.
+  static Stream<RecommendationEntry?> recommendationStream(String uid) {
+    return _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_recommendationsCol)
+        .where('dismissed', isEqualTo: false)
+        .orderBy('createdAt', descending: true)
+        .limit(1)
+        .snapshots()
+        .map((snapshot) =>
+            snapshot.docs.isEmpty ? null : RecommendationEntry.fromFirestore(snapshot.docs.first));
+  }
+
+  static Future<void> dismissRecommendation(String uid, String id) async {
+    await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_recommendationsCol)
+        .doc(id)
+        .update({'dismissed': true});
   }
 }

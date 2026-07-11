@@ -11,12 +11,14 @@ import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
 import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
+import '../models/recommendation_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import '../services/fit_predictor.dart';
 import '../services/firestore_service.dart';
 import '../services/gemini_api_exception.dart';
 import '../services/gemini_service.dart';
+import '../services/outfit_matcher.dart';
 import '../services/storage_service.dart';
 
 const _uploadCategories = ['상의', '하의', '아우터', '신발', '액세서리', '전신'];
@@ -32,13 +34,93 @@ Future<void> _extractAndCacheAttributes(
   String imageUrl,
   String category,
 ) async {
+  debugPrint('[RECOMMEND] 속성 추출 시작: id=$itemId, category=$category');
   try {
     final attributes = await _extractAttributesWithRetry(imageUrl, category);
+    debugPrint('[RECOMMEND] 속성 추출 완료: color=${attributes.color}, style=${attributes.style}');
     await FirestoreService.updateWardrobeAttributes(itemId, attributes);
-  } catch (_) {
+    // "능동 추천" 파이프라인은 속성이 준비된 직후에만 의미가 있고, 실패해도
+    // 옷 등록 자체를 막으면 안 되므로 별도의 조용한 백그라운드 작업으로 흘려보낸다.
+    unawaited(_generateRecommendationSilently(
+      WardrobeItem(
+        id: itemId,
+        imageUrl: imageUrl,
+        category: category,
+        createdAt: DateTime.now(),
+        attributes: attributes,
+      ),
+    ));
+  } catch (e) {
     // 업로드 자체는 이미 끝난 뒤라 실패를 사용자에게 노출하지 않는다.
     // 분석 시점 폴백(FittingJobController._resolveAttributes)이 나중에 채운다.
+    debugPrint('[속성추출] 실패: $e');
   }
+}
+
+// ── 능동 추천: 새 옷 등록 → 로컬 매칭(1단계) → Gemini 1회(2단계) → 저장 ──
+// 추천은 부가 기능이라, 어느 단계에서 실패하든 조용히 무시한다
+// (fitting_cache 저장, 속성 백필과 동일한 실패 처리 패턴). 각 단계 진입/이탈을
+// [RECOMMEND] 로그로 남겨 파이프라인이 어디서 멈추는지 진단할 수 있게 한다.
+Future<void> _generateRecommendationSilently(WardrobeItem newItem) async {
+  debugPrint('[RECOMMEND] 파이프라인 시작: 새 옷 id=${newItem.id}, category=${newItem.category}');
+  try {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      debugPrint('[RECOMMEND] 중단 — 로그인된 사용자 없음(uid null)');
+      return;
+    }
+
+    final existingItems = await FirestoreService.wardrobeStream().first;
+    final match = OutfitMatcher.findBestMatch(
+      newItem: newItem,
+      existingItems: existingItems,
+    );
+    // 매칭 실패/성공 이유는 OutfitMatcher가 이미 [RECOMMEND] 로그로 남긴다.
+    if (match == null) return;
+
+    final itemsForAnalysis = match.items
+        .map((i) => (category: i.category, attributes: i.attributes!))
+        .toList();
+
+    debugPrint('[RECOMMEND] Gemini 분석 요청 중...');
+    String analysisText;
+    try {
+      analysisText = await GeminiService.analyzeOutfitFromAttributes(items: itemsForAnalysis);
+    } catch (e) {
+      debugPrint('[RECOMMEND] Gemini 호출 실패: $e');
+      return;
+    }
+    final score = _parseColorScore(analysisText);
+    debugPrint('[RECOMMEND] Gemini 응답 받음: 점수=$score');
+
+    final entry = RecommendationEntry(
+      id: '',
+      itemIds: match.items.map((i) => i.id).toList(),
+      itemSummaries:
+          match.items.map((i) => '${i.category}: ${i.attributes!.toPromptLine()}').toList(),
+      colorScore: score,
+      summaryText: _stripColorScoreLine(analysisText),
+      triggerItemId: newItem.id,
+      createdAt: DateTime.now(),
+    );
+
+    debugPrint('[RECOMMEND] Firestore 저장 시도...');
+    // 성공/실패 로그는 addRecommendationSilently 내부에서 남긴다.
+    await FirestoreService.addRecommendationSilently(uid, entry);
+  } catch (e) {
+    debugPrint('[RECOMMEND] 파이프라인 예외로 중단: $e');
+  }
+}
+
+int? _parseColorScore(String analysisText) {
+  final match = RegExp(r'\[점수\]\s*(\d+)').firstMatch(analysisText);
+  if (match == null) return null;
+  final score = int.tryParse(match.group(1) ?? '');
+  return score?.clamp(1, 100);
+}
+
+String _stripColorScoreLine(String analysisText) {
+  return analysisText.replaceFirst(RegExp(r'\[점수\]\s*\d+\n?'), '').trim();
 }
 
 // 타임아웃 등 일시적 오류는 한 번 더 시도해본다.
@@ -130,8 +212,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     try {
       await BackgroundRemover.instance.initializeOrt();
       if (mounted) setState(() => _isBgRemoverReady = true);
-    } catch (_) {
+    } catch (e) {
       // 초기화 실패 — 이번 세션은 배경 제거 없이 원본만 사용.
+      debugPrint('[배경제거초기화] 실패: $e');
     }
   }
 
@@ -396,7 +479,8 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
         ],
       );
       return cropped?.path;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[이미지크롭] 실패: $e');
       return null;
     }
   }
@@ -527,7 +611,8 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       final byteData = await resultImage.toByteData(format: ui.ImageByteFormat.png);
       resultImage.dispose();
       cutoutBytes = byteData?.buffer.asUint8List();
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[배경제거] 실패: $e');
       cutoutBytes = null;
     } finally {
       if (mounted) setState(() => _isUploading = false);

@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../config/env.dart';
 import '../models/clothing_attributes.dart';
@@ -205,6 +205,7 @@ class GeminiService {
     required List<({String category, ClothingAttributes attributes})> items,
     String? userPhotoUrl,
     UserProfile? userProfile,
+    String? recentHistoryText,
   }) async {
     // 옷 이미지는 더 이상 보내지 않는다 — 등록 시점에 뽑아둔 색상/스타일/
     // 패턴/격식/핏/태그 텍스트만으로 매칭을 평가하므로 입력이 훨씬 가볍다.
@@ -221,10 +222,14 @@ class GeminiService {
     }
 
     final prompt = hasProfile
-        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile)
+        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile,
+            recentHistoryText: recentHistoryText)
         : (userPhotoUrl != null
-            ? _buildAttributeAnalysisPromptWithPhoto(items)
-            : _buildAttributeAnalysisPrompt(items));
+            ? _buildAttributeAnalysisPromptWithPhoto(items,
+                recentHistoryText: recentHistoryText)
+            : _buildAttributeAnalysisPrompt(items,
+                recentHistoryText: recentHistoryText));
+    _debugLogHistoryInclusion(prompt, recentHistoryText);
 
     final parts = <Map<String, dynamic>>[
       {'text': prompt},
@@ -263,6 +268,7 @@ class GeminiService {
     required List<({String category, ClothingAttributes attributes})> items,
     String? userPhotoUrl,
     UserProfile? userProfile,
+    String? recentHistoryText,
   }) async* {
     final hasProfile = userProfile != null && userProfile.hasAnyData;
 
@@ -275,10 +281,14 @@ class GeminiService {
     }
 
     final prompt = hasProfile
-        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile)
+        ? _buildAttributeAnalysisPromptWithProfile(items, userProfile,
+            recentHistoryText: recentHistoryText)
         : (userPhotoUrl != null
-            ? _buildAttributeAnalysisPromptWithPhoto(items)
-            : _buildAttributeAnalysisPrompt(items));
+            ? _buildAttributeAnalysisPromptWithPhoto(items,
+                recentHistoryText: recentHistoryText)
+            : _buildAttributeAnalysisPrompt(items,
+                recentHistoryText: recentHistoryText));
+    _debugLogHistoryInclusion(prompt, recentHistoryText);
 
     final parts = <Map<String, dynamic>>[
       {'text': prompt},
@@ -431,10 +441,29 @@ $clothingList
         .join('\n');
   }
 
+  // 최근 코디 이력을 프롬프트에 끼워 넣을 섹션 텍스트로 감싼다.
+  // 이력이 없으면(신규 사용자, 조회 실패 등) 빈 문자열을 반환해 기존
+  // 프롬프트 형식(섹션 없이 빈 줄 하나)이 그대로 유지되게 한다.
+  static String _buildHistorySection(String? recentHistoryText) {
+    if (recentHistoryText == null || recentHistoryText.isEmpty) return '';
+    return '\n최근 코디 이력(참고용 — 사용자가 과거에 시도했던 조합입니다. 취향 파악에 참고하되 그대로 반복 추천하지는 마세요):\n$recentHistoryText\n';
+  }
+
+  // 이력 섹션이 실제로 최종 프롬프트 문자열에 포함됐는지 눈으로 바로
+  // 확인할 수 있도록 남기는 디버그 로그. recentHistoryText가 없으면 조용히 스킵.
+  static void _debugLogHistoryInclusion(String prompt, String? recentHistoryText) {
+    if (recentHistoryText == null || recentHistoryText.isEmpty) return;
+    final included = prompt.contains(recentHistoryText);
+    debugPrint('[HISTORY] 프롬프트에 최근 이력 포함 여부: $included');
+    debugPrint('[HISTORY] 삽입된 텍스트:\n$recentHistoryText');
+  }
+
   static String _buildAttributeAnalysisPromptWithPhoto(
-    List<({String category, ClothingAttributes attributes})> items,
-  ) {
+    List<({String category, ClothingAttributes attributes})> items, {
+    String? recentHistoryText,
+  }) {
     final itemLines = _itemsToPromptLines(items);
+    final historySection = _buildHistorySection(recentHistoryText);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 
@@ -444,7 +473,7 @@ $clothingList
 분석 대상은 아래 텍스트로 설명된 의류들입니다. 실제 이미지는 첨부되지 않았으니 아래 설명만으로 판단해 주세요.
 
 $itemLines
-
+$historySection
 이 의류들을 첫 번째 사진 착용자가 입었을 때 얼마나 잘 어울릴지, 가상 피팅 관점에서 평가해 주세요.
 
 아래 형식으로 정확히 답변해 주세요.
@@ -467,9 +496,11 @@ $itemLines
 
   static String _buildAttributeAnalysisPromptWithProfile(
     List<({String category, ClothingAttributes attributes})> items,
-    UserProfile profile,
-  ) {
+    UserProfile profile, {
+    String? recentHistoryText,
+  }) {
     final itemLines = _itemsToPromptLines(items);
+    final historySection = _buildHistorySection(recentHistoryText);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 
@@ -478,7 +509,7 @@ $itemLines
 분석 대상은 아래 텍스트로 설명된 의류들입니다.
 
 $itemLines
-
+$historySection
 위 착용자 정보를 참고해서, 이 의류들이 착용자에게 얼마나 잘 어울릴지 평가해 주세요.
 
 아래 형식으로 정확히 답변해 주세요.
@@ -500,15 +531,17 @@ $itemLines
   }
 
   static String _buildAttributeAnalysisPrompt(
-    List<({String category, ClothingAttributes attributes})> items,
-  ) {
+    List<({String category, ClothingAttributes attributes})> items, {
+    String? recentHistoryText,
+  }) {
     final itemLines = _itemsToPromptLines(items);
+    final historySection = _buildHistorySection(recentHistoryText);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 아래에 텍스트로 설명된 의류 조합을 보고, 컬러 조합을 점수로 평가하고 코디 분석 및 다른 색상 추천을 해 주세요. 실제 이미지는 첨부되지 않았으니 아래 설명만으로 판단해 주세요.
 
 $itemLines
-
+$historySection
 아래 형식으로 정확히 답변해 주세요.
 
 [점수] (현재 코디의 컬러 조합을 1~100점으로 평가한 숫자만 입력)

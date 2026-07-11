@@ -1,19 +1,20 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
-
-const _recentItems = [
-  {'label': '캐주얼 데일리', 'date': '오늘', 'img': 'https://images.unsplash.com/photo-1532332248682-206cc786359f?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=400&w=300&q=80'},
-  {'label': '블랙 스트릿', 'date': '어제', 'img': 'https://images.unsplash.com/photo-1586231912972-d0970f9ce787?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=400&w=300&q=80'},
-  {'label': '시크 코디', 'date': '2일 전', 'img': 'https://images.unsplash.com/photo-1579883180654-695b7f038d4c?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=400&w=300&q=80'},
-  {'label': '모던 룩', 'date': '3일 전', 'img': 'https://images.unsplash.com/photo-1541980161-32fe8af73880?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=400&w=300&q=80'},
-  {'label': '스트릿 웨어', 'date': '4일 전', 'img': 'https://images.unsplash.com/photo-1689044611227-3267fabaf76a?crop=entropy&cs=tinysrgb&fit=crop&fm=jpg&h=400&w=300&q=80'},
-];
+import '../constants/style_tips.dart';
+import '../models/outfit_history_entry.dart';
+import '../models/recommendation_entry.dart';
+import '../models/wardrobe_item.dart';
+import '../services/firestore_service.dart';
 
 class HomeScreen extends StatelessWidget {
   final ValueChanged<int> onNavigate;
+  final ValueChanged<List<WardrobeItem>> onOpenFittingRoom;
 
-  const HomeScreen({super.key, required this.onNavigate});
+  const HomeScreen({super.key, required this.onNavigate, required this.onOpenFittingRoom});
 
   @override
   Widget build(BuildContext context) {
@@ -22,6 +23,7 @@ class HomeScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _NavyHero(onNavigate: onNavigate),
+          _RecommendationCard(onOpenFittingRoom: onOpenFittingRoom),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
             child: _ActionGrid(onNavigate: onNavigate),
@@ -44,6 +46,171 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(height: 40),
         ],
       ),
+    );
+  }
+}
+
+// ── 능동 추천 카드: 새 옷 등록을 계기로 백그라운드에서 자동 생성된
+// 코디 1건을 dismissed==false 중 최신 것만 노출한다. 없으면 자리 자체를
+// 차지하지 않는다.
+class _RecommendationCard extends StatelessWidget {
+  final ValueChanged<List<WardrobeItem>> onOpenFittingRoom;
+
+  const _RecommendationCard({required this.onOpenFittingRoom});
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const SizedBox.shrink();
+
+    return StreamBuilder<RecommendationEntry?>(
+      stream: FirestoreService.recommendationStream(uid),
+      builder: (context, snapshot) {
+        final entry = snapshot.data;
+        if (entry == null) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+          child: _RecommendationCardBody(
+            key: ValueKey(entry.id),
+            entry: entry,
+            onOpenFittingRoom: onOpenFittingRoom,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RecommendationCardBody extends StatelessWidget {
+  final RecommendationEntry entry;
+  final ValueChanged<List<WardrobeItem>> onOpenFittingRoom;
+
+  const _RecommendationCardBody({
+    super.key,
+    required this.entry,
+    required this.onOpenFittingRoom,
+  });
+
+  // 닫기는 사용자가 직접 트리거한 부가 동작이라, 실패해도 카드가 조금 더
+  // 남아있는 정도라 조용히 무시한다(로컬 캐시로 보통 즉시 반영된다).
+  void _dismiss() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    unawaited(FirestoreService.dismissRecommendation(uid, entry.id).catchError((_) {}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<WardrobeItem>>(
+      stream: FirestoreService.wardrobeStream(),
+      builder: (context, snapshot) {
+        final byId = {for (final i in snapshot.data ?? const <WardrobeItem>[]) i.id: i};
+        final matchedItems =
+            entry.itemIds.map((id) => byId[id]).whereType<WardrobeItem>().toList();
+
+        return GestureDetector(
+          onTap: matchedItems.isEmpty ? null : () => onOpenFittingRoom(matchedItems),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.blue.withValues(alpha: 0.25)),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.navy.withValues(alpha: 0.06),
+                  blurRadius: 14,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: AppColors.bluePale,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.auto_awesome, color: AppColors.blue, size: 16),
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        '회원님을 위한 추천 코디',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    if (entry.colorScore != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: AppColors.blue.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${entry.colorScore}점',
+                          style: const TextStyle(
+                            color: AppColors.blue,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    GestureDetector(
+                      onTap: _dismiss,
+                      child: const Icon(Icons.close, color: AppColors.textDisabled, size: 18),
+                    ),
+                  ],
+                ),
+                if (matchedItems.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 64,
+                    child: Row(
+                      children: matchedItems
+                          .map((item) => Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: CachedNetworkImage(
+                                    imageUrl: item.cutoutImageUrl ?? item.imageUrl,
+                                    width: 64,
+                                    height: 64,
+                                    fit: BoxFit.cover,
+                                    placeholder: (_, __) => Container(color: AppColors.background),
+                                    errorWidget: (_, __, ___) =>
+                                        Container(color: AppColors.background),
+                                  ),
+                                ),
+                              ))
+                          .toList(),
+                    ),
+                  ),
+                ],
+                if (entry.summaryText.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    entry.summaryText,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.5),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -181,7 +348,7 @@ class _ActionGrid extends StatelessWidget {
             child: _ActionCard(
               icon: Icons.style_outlined,
               label: 'AI 피팅',
-              sublabel: '쇼핑 매치 추천',
+              sublabel: '가상 피팅·코디 분석',
               isPrimary: true,
               badge: 'AI',
               onTap: () => onNavigate(2),
@@ -344,24 +511,137 @@ class _SectionHeader extends StatelessWidget {
 }
 
 // ── 최근 착장 가로 스크롤 ──────────────────────────────
-class _RecentOutfits extends StatelessWidget {
+// users/{uid}/history 중 type == fitting && fittingImageUrl != null인
+// 항목만 최신순으로 골라 보여준다. 새 쿼리를 만들지 않고 기존
+// getRecentHistorySilently를 재사용해 클라이언트에서 걸러낸다.
+class _RecentOutfits extends StatefulWidget {
   final ValueChanged<int> onNavigate;
 
   const _RecentOutfits({required this.onNavigate});
 
   @override
+  State<_RecentOutfits> createState() => _RecentOutfitsState();
+}
+
+class _RecentOutfitsState extends State<_RecentOutfits> {
+  static const _maxItems = 8;
+
+  List<OutfitHistoryEntry>? _entries; // null = 로딩 중
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      if (mounted) setState(() => _entries = const []);
+      return;
+    }
+    // 전체 이력 중 일부만 fitting 타입일 수 있으니 넉넉히 가져와서 거른다.
+    final history = await FirestoreService.getRecentHistorySilently(uid, limit: 30);
+    final fittingEntries = history
+        .where((e) => e.type == OutfitHistoryEntry.typeFitting && e.fittingImageUrl != null)
+        .take(_maxItems)
+        .toList();
+    if (mounted) setState(() => _entries = fittingEntries);
+  }
+
+  String _relativeDateLabel(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(dt.year, dt.month, dt.day);
+    final diff = today.difference(that).inDays;
+    if (diff <= 0) return '오늘';
+    if (diff == 1) return '어제';
+    return '$diff일 전';
+  }
+
+  // 저장된 코디명이 없으므로 아이템 스냅샷에서 "블랙 상의 + 그레이 하의"
+  // 처럼 짧은 설명을 즉석에서 만든다.
+  String _outfitLabel(OutfitHistoryEntry entry) {
+    final parts = entry.items.take(2).map((i) {
+      final color = i.color;
+      return (color != null && color.isNotEmpty) ? '$color ${i.category}' : i.category;
+    }).toList();
+    return parts.isEmpty ? '코디 조합' : parts.join(' + ');
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entries = _entries;
+    if (entries == null) {
+      return const SizedBox(
+        height: 215,
+        child: Center(
+          child: CircularProgressIndicator(color: AppColors.navy, strokeWidth: 2),
+        ),
+      );
+    }
+
+    if (entries.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+        margin: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          children: [
+            const Icon(Icons.checkroom_outlined, color: AppColors.textDisabled, size: 28),
+            const SizedBox(height: 10),
+            const Text(
+              '아직 저장된 착장이 없어요',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'AI 피팅을 먼저 사용해 보세요',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 14),
+            GestureDetector(
+              onTap: () => widget.onNavigate(2),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.navy,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'AI 피팅 하러 가기',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return SizedBox(
       height: 215,
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         scrollDirection: Axis.horizontal,
-        itemCount: _recentItems.length,
+        itemCount: entries.length,
         itemBuilder: (context, i) {
-          final item = _recentItems[i];
+          final entry = entries[i];
           return Container(
             width: 140,
-            margin: EdgeInsets.only(right: i < _recentItems.length - 1 ? 12 : 0),
+            margin: EdgeInsets.only(right: i < entries.length - 1 ? 12 : 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -372,7 +652,7 @@ class _RecentOutfits extends StatelessWidget {
                       fit: StackFit.expand,
                       children: [
                         CachedNetworkImage(
-                          imageUrl: item['img']!,
+                          imageUrl: entry.fittingImageUrl!,
                           fit: BoxFit.cover,
                           placeholder: (_, __) => Container(color: AppColors.background),
                           errorWidget: (_, __, ___) => Container(color: AppColors.background),
@@ -392,7 +672,7 @@ class _RecentOutfits extends StatelessWidget {
                           bottom: 10,
                           left: 10,
                           child: Text(
-                            item['date']!,
+                            entry.createdAt != null ? _relativeDateLabel(entry.createdAt!) : '',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 11,
@@ -406,7 +686,7 @@ class _RecentOutfits extends StatelessWidget {
                 ),
                 const SizedBox(height: 9),
                 Text(
-                  item['label']!,
+                  _outfitLabel(entry),
                   style: const TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 13,
@@ -425,8 +705,18 @@ class _RecentOutfits extends StatelessWidget {
 }
 
 // ── AI 팁 배너 ───────────────────────────────────────────
-class _AiTipBanner extends StatelessWidget {
+// fitting_room_screen.dart의 로딩 팁과 같은 풀(lib/constants/style_tips.dart)에서
+// 홈 화면에 들어올 때마다 하나를 랜덤으로 뽑아 보여준다. State에 보관해
+// 같은 화면에 머무는 동안(리빌드가 일어나도) 문구가 계속 바뀌지 않게 한다.
+class _AiTipBanner extends StatefulWidget {
   const _AiTipBanner();
+
+  @override
+  State<_AiTipBanner> createState() => _AiTipBannerState();
+}
+
+class _AiTipBannerState extends State<_AiTipBanner> {
+  final String _tip = allStyleTips[math.Random().nextInt(allStyleTips.length)];
 
   @override
   Widget build(BuildContext context) {
@@ -449,11 +739,11 @@ class _AiTipBanner extends StatelessWidget {
             child: const Icon(Icons.tips_and_updates_outlined, color: Colors.white, size: 18),
           ),
           const SizedBox(width: 14),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   '오늘의 AI 코디 팁',
                   style: TextStyle(
                     color: AppColors.textPrimary,
@@ -461,10 +751,10 @@ class _AiTipBanner extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                SizedBox(height: 3),
+                const SizedBox(height: 3),
                 Text(
-                  '화이트 셔츠에 슬림 청바지 조합을 오늘 추천합니다.',
-                  style: TextStyle(
+                  _tip,
+                  style: const TextStyle(
                     color: AppColors.textMuted,
                     fontSize: 12,
                     height: 1.5,

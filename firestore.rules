@@ -20,5 +20,18 @@ service cloud.firestore {
     match /users/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
+
+    // 코디 사용 이력(개인화 추천용 축적 데이터) — users/{uid}와 동일하게
+    // 본인 것만 읽고 쓸 수 있다. 상위 match는 서브컬렉션까지 커버하지
+    // 않으므로 별도 블록이 필요하다.
+    match /users/{uid}/history/{historyId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 능동 추천(새 옷 등록 계기로 백그라운드 생성된 코디 카드) — 동일하게
+    // 본인 것만 읽고 쓸 수 있다.
+    match /users/{uid}/recommendations/{recId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
   }
 }

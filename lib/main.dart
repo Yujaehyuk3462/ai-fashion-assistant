@@ -101,6 +101,20 @@ class _AppShellState extends State<AppShell> {
     });
   }
 
+  // 홈 화면의 추천 코디 카드 탭 → 조합에 포함된 아이템들을 피팅룸 슬롯에
+  // 한 번에 채우고 이동. 피팅룸은 상의/하의/아우터 슬롯만 가지므로 그 외
+  // 카테고리(예: 신발)는 자연스럽게 무시된다.
+  void _sendRecommendationToFittingRoom(List<WardrobeItem> items) {
+    setState(() {
+      for (final item in items) {
+        if (_fittingItems.containsKey(item.category)) {
+          _fittingItems[item.category] = item;
+        }
+      }
+      _tabIndex = 2;
+    });
+  }
+
   // 피팅룸 인라인: 슬롯에 아이템 설정
   void _setFittingItem(String category, WardrobeItem item) {
     setState(() => _fittingItems[category] = item);
@@ -149,7 +163,10 @@ class _AppShellState extends State<AppShell> {
     if (_showItemDetail) return ItemDetailScreen(onBack: _backFromDetail);
     switch (_tabIndex) {
       case 0:
-        return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
+        return HomeScreen(
+          onNavigate: (i) => setState(() => _tabIndex = i),
+          onOpenFittingRoom: _sendRecommendationToFittingRoom,
+        );
       case 1:
         // 옷장: 아이템 선택 콜백 전달
         return WardrobeScreen(onSelectItem: _sendToFittingRoom);
@@ -169,7 +186,10 @@ class _AppShellState extends State<AppShell> {
       case 4:
         return const SettingsScreen();
       default:
-        return HomeScreen(onNavigate: (i) => setState(() => _tabIndex = i));
+        return HomeScreen(
+          onNavigate: (i) => setState(() => _tabIndex = i),
+          onOpenFittingRoom: _sendRecommendationToFittingRoom,
+        );
     }
   }
 }

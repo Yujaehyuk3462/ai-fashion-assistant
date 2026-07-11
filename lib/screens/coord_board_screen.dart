@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../models/outfit_history_entry.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 
@@ -133,6 +136,10 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
 
   bool _editMode = false;
 
+  // 마지막으로 이력에 기록한 조합의 서명(정렬된 옷 id 조합) — 편집 완료를
+  // 여러 번 눌러도 같은 조합이면 중복 기록하지 않기 위한 용도.
+  String? _lastLoggedBoardSignature;
+
   @override
   void initState() {
     super.initState();
@@ -178,6 +185,36 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   void _handleSlotGestureEnd(String slotKey) {
     _gestureStartScale.remove(slotKey);
     _saveTransforms();
+  }
+
+  // 편집 모드를 끄는 순간(= "완료" 탭)을 "이 조합이 마음에 들어 저장했다"는
+  // 의도로 간주해 이력에 남긴다. 켤 때나 드래그/핀치 도중에는 기록하지 않는다.
+  void _toggleEditMode() {
+    final wasEditing = _editMode;
+    setState(() => _editMode = !_editMode);
+    if (wasEditing && !_editMode) {
+      _logBoardHistorySilently();
+    }
+  }
+
+  void _logBoardHistorySilently() {
+    final items = _slots.values.whereType<WardrobeItem>().toList();
+    if (items.length < 2) return;
+
+    final signature = (items.map((i) => i.id).toList()..sort()).join(',');
+    if (signature == _lastLoggedBoardSignature) return;
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    _lastLoggedBoardSignature = signature;
+    unawaited(FirestoreService.addHistoryEntrySilently(
+      uid,
+      OutfitHistoryEntry(
+        type: OutfitHistoryEntry.typeBoard,
+        items: items.map(HistoryItemSnapshot.fromWardrobeItem).toList(),
+      ),
+    ));
   }
 
   void _pickForSlot(String slotKey) {
@@ -232,7 +269,7 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
                       color: AppColors.textPrimary, fontSize: 22, fontWeight: FontWeight.w800)),
               const Spacer(),
               TextButton.icon(
-                onPressed: () => setState(() => _editMode = !_editMode),
+                onPressed: _toggleEditMode,
                 style: TextButton.styleFrom(
                   foregroundColor: _editMode ? AppColors.blue : AppColors.textMuted,
                 ),

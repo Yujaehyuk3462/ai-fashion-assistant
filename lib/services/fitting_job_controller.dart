@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../models/clothing_attributes.dart';
+import '../models/outfit_history_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import 'firestore_service.dart';
@@ -32,7 +34,10 @@ class FittingJobController extends ChangeNotifier {
     required WardrobeItem? userPhoto,
     UserProfile? userProfile,
   }) async {
-    if (isBusy || clothingItems.isEmpty) return;
+    // isBusy(분석 OR 피팅)가 아니라 자기 자신의 진행 여부만 본다 — 통합 버튼이
+    // analyze()와 generateFitting()을 동시에 실행할 수 있어야 하므로, 서로가
+    // 서로를 막으면 안 된다.
+    if (isAnalyzing || clothingItems.isEmpty) return;
 
     isAnalyzing = true;
     analysisResult = null;
@@ -41,9 +46,25 @@ class FittingJobController extends ChangeNotifier {
 
     final debugT0 = DateTime.now();
     try {
+      // 이력 조회는 속성 준비와 서로 의존하지 않으므로 동시에 시작해 지연을 숨긴다.
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final recentHistoryFuture = uid != null
+          ? FirestoreService.getRecentHistorySilently(uid, limit: 10)
+          : Future.value(<OutfitHistoryEntry>[]);
+
       final itemsWithAttributes = await _resolveAttributes(clothingItems);
       final debugT1 = DateTime.now();
       debugPrint('[TIMING] 1) 속성 준비: ${debugT1.difference(debugT0).inMilliseconds}ms');
+
+      final recentHistory = await recentHistoryFuture;
+      final recentHistoryText = recentHistory.isEmpty
+          ? null
+          : recentHistory.map((e) => e.toPromptLine()).join('\n');
+      final debugT1b = DateTime.now();
+      debugPrint('[TIMING] 1b) 이력 조회(속성 준비와 병렬, 순수 대기분): '
+          '${debugT1b.difference(debugT1).inMilliseconds}ms');
+      debugPrint('[HISTORY] 최근 이력 ${recentHistory.length}건 조회됨'
+          '${recentHistoryText != null ? ' — 프롬프트에 전달:\n$recentHistoryText' : ' (없음, 섹션 생략)'}');
 
       try {
         final buffer = StringBuffer();
@@ -52,6 +73,7 @@ class FittingJobController extends ChangeNotifier {
           items: itemsWithAttributes,
           userPhotoUrl: userPhoto?.imageUrl,
           userProfile: userProfile,
+          recentHistoryText: recentHistoryText,
         )) {
           debugFirstChunkAt ??= DateTime.now();
           buffer.write(chunk);
@@ -59,15 +81,16 @@ class FittingJobController extends ChangeNotifier {
           notifyListeners();
         }
         final debugT2 = DateTime.now();
-        debugPrint('[TIMING] 2) 첫 응답까지: '
-            '${(debugFirstChunkAt ?? debugT2).difference(debugT1).inMilliseconds}ms');
+        debugPrint('[TIMING] 2) 첫 응답까지(순수 Gemini 네트워크): '
+            '${(debugFirstChunkAt ?? debugT2).difference(debugT1b).inMilliseconds}ms');
         debugPrint('[TIMING] 3) 전체 생성 완료: '
-            '${debugT2.difference(debugT1).inMilliseconds}ms '
+            '${debugT2.difference(debugT1b).inMilliseconds}ms '
             '(총합 ${debugT2.difference(debugT0).inMilliseconds}ms)');
         if (buffer.isEmpty) throw Exception('스트리밍 응답이 비어 있습니다.');
-      } catch (_) {
+      } catch (e) {
         // 스트리밍이 중간에 끊기거나 실패하면 부분 텍스트는 버리고
         // 기존의 안정적인 전체 호출 + 재시도 경로로 폴백한다.
+        debugPrint('[STREAM-FALLBACK] 스트리밍 실패, 원인: $e');
         analysisResult = null;
         notifyListeners();
         analysisResult = await _withRetry(
@@ -75,15 +98,54 @@ class FittingJobController extends ChangeNotifier {
             items: itemsWithAttributes,
             userPhotoUrl: userPhoto?.imageUrl,
             userProfile: userProfile,
+            recentHistoryText: recentHistoryText,
           ),
         );
       }
+      _logAnalysisHistorySilently(clothingItems, itemsWithAttributes, analysisResult);
     } catch (e) {
       analysisError = e.toString();
     } finally {
       isAnalyzing = false;
       notifyListeners();
     }
+  }
+
+  // 분석 결과 텍스트에서 "[점수] N" 줄을 찾아 점수를 뽑는다.
+  // fitting_room_screen.dart의 표시용 파서와 별개로, 이력 기록 전용으로 둔다.
+  static int? _parseScore(String? text) {
+    if (text == null) return null;
+    final match = RegExp(r'\[점수\]\s*(\d+)').firstMatch(text);
+    if (match == null) return null;
+    final score = int.tryParse(match.group(1) ?? '');
+    return score?.clamp(1, 100);
+  }
+
+  static void _logAnalysisHistorySilently(
+    List<WardrobeItem> clothingItems,
+    List<({String category, ClothingAttributes attributes})> itemsWithAttributes,
+    String? analysisResult,
+  ) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final snapshots = List.generate(clothingItems.length, (i) {
+      final resolved = itemsWithAttributes[i];
+      return HistoryItemSnapshot(
+        id: clothingItems[i].id,
+        category: resolved.category,
+        color: resolved.attributes.color,
+        style: resolved.attributes.style,
+        formality: resolved.attributes.formality,
+      );
+    });
+    unawaited(FirestoreService.addHistoryEntrySilently(
+      uid,
+      OutfitHistoryEntry(
+        type: OutfitHistoryEntry.typeAnalysis,
+        items: snapshots,
+        score: _parseScore(analysisResult),
+      ),
+    ));
   }
 
   // 등록 시점에 이미 속성이 캐싱된 아이템은 그대로 쓰고, 아직 없는
@@ -125,7 +187,8 @@ class FittingJobController extends ChangeNotifier {
     required List<WardrobeItem> clothingItems,
     bool forceRegenerate = false,
   }) async {
-    if (isBusy || clothingItems.isEmpty) return;
+    // analyze()와 동일한 이유로 자기 자신의 진행 여부만 본다.
+    if (isGeneratingFitting || clothingItems.isEmpty) return;
 
     isGeneratingFitting = true;
     fittingImage = null;
@@ -142,6 +205,7 @@ class FittingJobController extends ChangeNotifier {
         if (cachedUrl != null) {
           fittingImageUrl = cachedUrl;
           isFittingFromCache = true;
+          _logFittingHistorySilently(clothingItems, cachedUrl);
           return;
         }
       }
@@ -157,7 +221,9 @@ class FittingJobController extends ChangeNotifier {
 
       // 캐시 저장은 이미 화면에 이미지가 표시된 뒤의 부가 작업이라
       // 실패해도 조용히 무시한다 (_resolveAttributes의 백필과 동일 패턴).
-      unawaited(_cacheFittingResultSilently(cacheKey, bytes));
+      // 히스토리에 남길 URL은 이 업로드가 끝나야만 생기므로, 로깅도
+      // 함께 그 성공 콜백 안에서 처리한다(실패하면 URL이 없으니 로깅도 스킵).
+      unawaited(_cacheFittingResultSilently(cacheKey, bytes, clothingItems));
     } catch (e) {
       fittingError = e.toString();
     } finally {
@@ -178,12 +244,18 @@ class FittingJobController extends ChangeNotifier {
     return sha256.convert(utf8.encode(raw)).toString();
   }
 
-  static Future<void> _cacheFittingResultSilently(String cacheKey, Uint8List bytes) async {
+  static Future<void> _cacheFittingResultSilently(
+    String cacheKey,
+    Uint8List bytes,
+    List<WardrobeItem> clothingItems,
+  ) async {
     try {
       final imageUrl = await StorageService.uploadFittingResult(bytes, cacheKey);
       await FirestoreService.cacheFittingResult(cacheKey, imageUrl);
-    } catch (_) {
+      _logFittingHistorySilently(clothingItems, imageUrl);
+    } catch (e) {
       // 캐시 저장 실패는 무시 — 사용자에게는 이미 방금 생성된 이미지가 표시된 상태다.
+      debugPrint('[피팅캐시저장] 실패: $e');
     }
   }
 
@@ -193,8 +265,28 @@ class FittingJobController extends ChangeNotifier {
   static Future<String?> _getCachedFittingImageUrlSilently(String cacheKey) async {
     try {
       return await FirestoreService.getCachedFittingImageUrl(cacheKey);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[피팅캐시조회] 실패: $e');
       return null;
     }
+  }
+
+  // 캐시 히트/신규 생성 여부와 무관하게, 사용자가 실제로 받아본 가상 피팅
+  // 조합은 전부 이력에 남긴다. 결과 이미지 URL이 반드시 있어야 홈 화면
+  // "최근 착장" 섹션에 노출될 수 있으므로 필수 인자로 받는다.
+  static void _logFittingHistorySilently(
+    List<WardrobeItem> clothingItems,
+    String fittingImageUrl,
+  ) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    unawaited(FirestoreService.addHistoryEntrySilently(
+      uid,
+      OutfitHistoryEntry(
+        type: OutfitHistoryEntry.typeFitting,
+        items: clothingItems.map(HistoryItemSnapshot.fromWardrobeItem).toList(),
+        fittingImageUrl: fittingImageUrl,
+      ),
+    ));
   }
 }

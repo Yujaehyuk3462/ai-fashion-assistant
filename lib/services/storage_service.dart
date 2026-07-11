@@ -1,6 +1,6 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 
 class StorageService {
@@ -35,8 +35,9 @@ class StorageService {
     try {
       final ref = _storage.refFromURL(imageUrl);
       await ref.delete();
-    } catch (_) {
+    } catch (e) {
       // Storage 파일이 없어도 Firestore 삭제는 계속 진행
+      debugPrint('[스토리지삭제] 실패: $e');
     }
   }
 
