@@ -244,7 +244,10 @@ class FittingJobController extends ChangeNotifier {
     return sha256.convert(utf8.encode(raw)).toString();
   }
 
-  static Future<void> _cacheFittingResultSilently(
+  // 인스턴스 메서드다(static 아님) — 업로드가 끝나야만 알 수 있는 URL을
+  // fittingImageUrl에 반영하고 리스너에게 알려야 스크랩 등 URL이 필요한
+  // 기능이 신규 생성 결과에도 동작한다(기존엔 캐시 히트 때만 채워졌었다).
+  Future<void> _cacheFittingResultSilently(
     String cacheKey,
     Uint8List bytes,
     List<WardrobeItem> clothingItems,
@@ -252,6 +255,8 @@ class FittingJobController extends ChangeNotifier {
     try {
       final imageUrl = await StorageService.uploadFittingResult(bytes, cacheKey);
       await FirestoreService.cacheFittingResult(cacheKey, imageUrl);
+      fittingImageUrl = imageUrl;
+      notifyListeners();
       _logFittingHistorySilently(clothingItems, imageUrl);
     } catch (e) {
       // 캐시 저장 실패는 무시 — 사용자에게는 이미 방금 생성된 이미지가 표시된 상태다.

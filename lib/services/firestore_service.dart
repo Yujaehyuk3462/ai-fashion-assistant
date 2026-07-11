@@ -4,6 +4,7 @@ import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
 import '../models/outfit_history_entry.dart';
 import '../models/recommendation_entry.dart';
+import '../models/scrap_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 
@@ -194,5 +195,53 @@ class FirestoreService {
         .collection(_recommendationsCol)
         .doc(id)
         .update({'dismissed': true});
+  }
+
+  // ── 가상 피팅 스크랩 (사용자가 직접 북마크, 본인만 접근 가능) ──
+  // 사용자의 명시적 액션이므로 다른 *Silently 메서드들과 달리 실패를
+  // 삼키지 않고 그대로 던진다 — 호출부(fitting_room_screen.dart)가
+  // 스낵바로 알린다.
+  static const _scrapsCol = 'scraps';
+
+  static Future<String> addScrap(String uid, ScrapEntry entry) async {
+    final doc = await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_scrapsCol)
+        .add(entry.toFirestore());
+    return doc.id;
+  }
+
+  static Future<void> deleteScrap(String uid, String scrapId) async {
+    await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_scrapsCol)
+        .doc(scrapId)
+        .delete();
+  }
+
+  // 이름은 "스크랩됐는지 여부"지만, 있으면 그 문서 id를 그대로 반환해
+  // 호출부가 곧장 deleteScrap에 넘길 수 있게 한다(null이면 미스크랩).
+  // where절 1개만 쓰므로 복합 인덱스가 필요 없다.
+  static Future<String?> isScrapped(String uid, String fittingImageUrl) async {
+    final snapshot = await _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_scrapsCol)
+        .where('fittingImageUrl', isEqualTo: fittingImageUrl)
+        .limit(1)
+        .get();
+    return snapshot.docs.isEmpty ? null : snapshot.docs.first.id;
+  }
+
+  static Stream<List<ScrapEntry>> scrapStream(String uid) {
+    return _db
+        .collection(_usersCol)
+        .doc(uid)
+        .collection(_scrapsCol)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) => ScrapEntry.fromFirestore(doc)).toList());
   }
 }

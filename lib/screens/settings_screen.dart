@@ -4,6 +4,7 @@ import '../constants/app_colors.dart';
 import '../models/user_profile.dart';
 import '../services/firestore_service.dart';
 import 'body_profile_screen.dart';
+import 'scrap_screen.dart';
 
 const _settingsGroups = [
   {
@@ -16,7 +17,7 @@ const _settingsGroups = [
   {
     'title': '앱 설정',
     'items': [
-      {'icon': Icons.dark_mode, 'label': '다크 모드', 'sub': '시스템 설정 따름'},
+      {'icon': Icons.bookmark, 'label': '내 스크랩', 'sub': null},
       {'icon': Icons.smartphone, 'label': '체형 정보', 'sub': null}, // 실시간 프로필 데이터로 대체됨
     ],
   },
@@ -68,6 +69,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       MaterialPageRoute(builder: (_) => const BodyProfileScreen()),
     );
     _loadProfile();
+  }
+
+  void _openScraps() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ScrapScreen()),
+    );
   }
 
   @override
@@ -160,11 +168,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final icon = item['icon'] as IconData;
                 final label = item['label'] as String;
                 final isBodyInfo = label == '체형 정보';
+                final isMyScraps = label == '내 스크랩';
                 final sub = isBodyInfo ? _bodyInfoSummary() : item['sub'] as String?;
                 return Column(
                   children: [
                     InkWell(
-                      onTap: isBodyInfo ? _openBodyProfile : () {},
+                      onTap: isBodyInfo
+                          ? _openBodyProfile
+                          : (isMyScraps ? _openScraps : () {}),
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

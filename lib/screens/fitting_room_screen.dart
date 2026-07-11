@@ -1,16 +1,17 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
 import '../constants/style_tips.dart';
+import '../models/scrap_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 import '../services/fit_predictor.dart';
 import '../services/fitting_job_controller.dart';
+import '../widgets/full_screen_image_viewer.dart';
 
 class FittingRoomScreen extends StatefulWidget {
   final FittingJobController jobController;
@@ -56,6 +57,10 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   // ── 가상 피팅 캐시 배지 접기/펼치기 ──────────────────────
   bool _showCacheBadge = false;
 
+  // ── 가상 피팅 스크랩 ─────────────────────────────────────
+  String? _scrapId; // null이면 미스크랩, 값이 있으면 그 스크랩 문서 id
+  String? _checkedScrapUrl; // 마지막으로 isScrapped를 조회한 URL(중복 조회 방지)
+
   @override
   void initState() {
     super.initState();
@@ -63,6 +68,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     // 완료된 작업 결과도 여기서 리스너를 통해 그대로 반영된다.
     widget.jobController.addListener(_onJobChanged);
     _loadUserProfile();
+    _syncScrapStatus(); // 이미 결과가 있는 채로 화면에 재진입한 경우 대비
   }
 
   Future<void> _loadUserProfile() async {
@@ -82,7 +88,83 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   void _onJobChanged() {
     _syncLoadingTextTimer();
+    _syncScrapStatus();
     if (mounted) setState(() {});
+  }
+
+  // 피팅 이미지 URL이 바뀔 때마다(신규 생성 캐시 업로드 완료, 캐시 히트,
+  // 다른 조합으로 재생성 등) 현재 그 URL이 이미 스크랩됐는지 다시 조회한다.
+  // 같은 URL에 대해 중복 조회하지 않도록 마지막으로 확인한 URL을 기억한다.
+  Future<void> _syncScrapStatus() async {
+    final url = widget.jobController.fittingImageUrl;
+    if (url == null || url == _checkedScrapUrl) return;
+    _checkedScrapUrl = url;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    // 화면 진입 시 조용히 확인하는 배경 조회일 뿐이라, 실패해도(권한/네트워크
+    // 문제 등) 조용히 무시한다 — 아이콘이 "미스크랩" 상태로 남을 뿐, 사용자가
+    // 직접 북마크를 누르는 _toggleScrap()은 실패 시 별도로 스낵바를 띄운다.
+    try {
+      final scrapId = await FirestoreService.isScrapped(uid, url);
+      // 조회하는 동안 결과가 또 바뀌었으면(다시 생성 등) 낡은 응답은 버린다.
+      if (mounted && widget.jobController.fittingImageUrl == url) {
+        setState(() => _scrapId = scrapId);
+      }
+    } catch (e) {
+      debugPrint('[스크랩조회] 실패: $e');
+    }
+  }
+
+  // 스크랩은 사용자가 직접 누른 명시적 액션이므로, 실패를 조용히 무시하지
+  // 않고 스낵바로 알린다(다른 백그라운드 저장들과는 다른 처리 방침).
+  Future<void> _toggleScrap() async {
+    final url = widget.jobController.fittingImageUrl;
+    if (url == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('이미지 저장 준비 중이에요. 잠시 후 다시 시도해 주세요.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    try {
+      if (_scrapId != null) {
+        await FirestoreService.deleteScrap(uid, _scrapId!);
+        if (!mounted) return;
+        setState(() => _scrapId = null);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('스크랩을 해제했습니다.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      } else {
+        final selectedList = widget.selectedItems.values.whereType<WardrobeItem>().toList();
+        final entry = ScrapEntry(
+          id: '',
+          fittingImageUrl: url,
+          itemIds: selectedList.map((i) => i.id).toList(),
+          itemSummaries: selectedList
+              .map((i) => '${i.category}: ${i.attributes?.toPromptLine() ?? ""}')
+              .toList(),
+          createdAt: DateTime.now(),
+        );
+        final newId = await FirestoreService.addScrap(uid, entry);
+        if (!mounted) return;
+        setState(() => _scrapId = newId);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('스크랩에 저장했습니다.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('스크랩 처리 실패: $e'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.red,
+      ));
+    }
   }
 
   // isAnalyzing/isGeneratingFitting 중 하나라도 false→true로 바뀌는 순간
@@ -868,7 +950,7 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
       PageRouteBuilder(
         opaque: false,
         barrierColor: Colors.black,
-        pageBuilder: (_, __, ___) => _FullScreenImageViewer(
+        pageBuilder: (_, __, ___) => FullScreenImageViewer(
           imageBytes: fittingImage,
           imageUrl: fittingImage == null ? (fittingImageUrl ?? _mockFittingImageUrl) : null,
           label: hasRealResult ? 'AI 합성 피팅' : '내 사진 기반 피팅',
@@ -1009,15 +1091,40 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     Positioned(
                       top: 14,
                       right: 14,
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.55),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.fullscreen,
-                            color: Colors.white, size: 18),
+                      child: Row(
+                        children: [
+                          // 실제 AI 합성 결과일 때만 스크랩 가능 — 내 사진
+                          // 기반 폴백(_mockFittingImageUrl만 있는 경우)은 제외.
+                          if (hasRealFittingResult) ...[
+                            GestureDetector(
+                              onTap: _toggleScrap,
+                              child: Container(
+                                width: 32,
+                                height: 32,
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  _scrapId != null ? Icons.bookmark : Icons.bookmark_border,
+                                  color: Colors.white,
+                                  size: 18,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.fullscreen,
+                                color: Colors.white, size: 18),
+                          ),
+                        ],
                       ),
                     ),
                     Positioned(
@@ -1301,89 +1408,6 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
-}
-
-// ── 전체 화면 이미지 뷰어 위젯 ───────────────────────────
-class _FullScreenImageViewer extends StatelessWidget {
-  final Uint8List? imageBytes;
-  final String? imageUrl;
-  final String label;
-
-  const _FullScreenImageViewer({
-    this.imageBytes,
-    this.imageUrl,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          Center(
-            child: InteractiveViewer(
-              minScale: 0.8,
-              maxScale: 5.0,
-              child: imageBytes != null
-                  ? Image.memory(imageBytes!, fit: BoxFit.contain)
-                  : CachedNetworkImage(
-                      imageUrl: imageUrl!,
-                      fit: BoxFit.contain,
-                      placeholder: (_, __) => const Center(
-                          child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2)),
-                      errorWidget: (_, __, ___) => const Icon(
-                          Icons.image_outlined,
-                          color: Colors.white54,
-                          size: 48),
-                    ),
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                        color: AppColors.navy.withValues(alpha: 0.88),
-                        borderRadius: BorderRadius.circular(8)),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.auto_awesome, color: Colors.white, size: 12),
-                        const SizedBox(width: 5),
-                        Text(label,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700)),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.15),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.close, color: Colors.white, size: 20),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ── 옷장 아이템 선택 바텀시트 ─────────────────────────────
