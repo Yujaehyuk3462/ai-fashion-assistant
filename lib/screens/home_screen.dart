@@ -565,7 +565,7 @@ class _NavyHeroState extends State<_NavyHero> {
                   ),
                   const SizedBox(height: 5),
                   const Text(
-                    '민준님, 좋은 아침입니다',
+                    '디티오님, 좋은 아침입니다',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 22,

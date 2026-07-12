@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../constants/outfit_reason.dart';
 import '../constants/style_tips.dart';
 import '../models/scrap_entry.dart';
 import '../models/user_profile.dart';
@@ -11,6 +12,8 @@ import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 import '../services/fit_predictor.dart';
 import '../services/fitting_job_controller.dart';
+import '../services/fitting_progress.dart';
+import '../services/outfit_matcher.dart';
 import '../widgets/full_screen_image_viewer.dart';
 
 class FittingRoomScreen extends StatefulWidget {
@@ -372,46 +375,64 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 전체 화면을 덮는 오버레이는 없다 — 분석/피팅이 진행 중이어도 위쪽 슬롯은
-    // 계속 조작 가능하고, 로딩 상태는 아래 결과 카드 안에서 영역별로 보여준다.
-    return Column(
+    // 결과 영역은 항상 인라인 그대로다(원래 동작, 손대지 않음) — 로딩 중엔
+    // 결과 카드 자체가 영역별 순환 팁을 보여주고, 완료되면 자연스럽게
+    // 실제 결과로 전환된다. 그 위에 "로딩 중에만" 뜨는 대기 팝업을 얹는다
+    // (Stack) — 결과/점수/피팅 이미지는 팝업에 절대 들어가지 않는다.
+    return Stack(
       children: [
-        _buildHeader(),
-        Expanded(
-          child: SingleChildScrollView(
-            controller: _scrollController,
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildStepCard(
-                  number: '1',
-                  title: '내 사진 선택',
-                  subtitle: '옷장의 전신 코디 사진을 선택해 주세요',
-                  child: _buildPhotoSlot(),
+        Column(
+          children: [
+            _buildHeader(),
+            Expanded(
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildStepCard(
+                      number: '1',
+                      title: '내 사진 선택',
+                      subtitle: '옷장의 전신 코디 사진을 선택해 주세요',
+                      child: _buildPhotoSlot(),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildStepCard(
+                      number: '2',
+                      title: '코디 선택',
+                      subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
+                      child: _buildClothingSection(),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildFitPreview(),
+                    const SizedBox(height: 24),
+                    _buildActionButtons(),
+                    const SizedBox(height: 20),
+                    (widget.jobController.analysisResult != null ||
+                            widget.jobController.fittingImage != null ||
+                            widget.jobController.fittingImageUrl != null ||
+                            widget.jobController.isAnalyzing ||
+                            widget.jobController.isGeneratingFitting)
+                        ? _buildResultCard()
+                        : _buildResultPlaceholder(),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                _buildStepCard(
-                  number: '2',
-                  title: '코디 선택',
-                  subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
-                  child: _buildClothingSection(),
-                ),
-                const SizedBox(height: 16),
-                _buildFitPreview(),
-                const SizedBox(height: 24),
-                _buildActionButtons(),
-                const SizedBox(height: 20),
-                (widget.jobController.analysisResult != null ||
-                        widget.jobController.fittingImage != null ||
-                        widget.jobController.fittingImageUrl != null ||
-                        widget.jobController.isAnalyzing ||
-                        widget.jobController.isGeneratingFitting)
-                    ? _buildResultCard()
-                    : _buildResultPlaceholder(),
-              ],
+              ),
             ),
-          ),
+          ],
+        ),
+        // 로딩 대기 팝업 — 진행 중(isAnalyzing/isGeneratingFitting)이고
+        // 접히지 않았을 때만 뜬다. 완료되는 즉시(isBusy==false) 사라지고,
+        // 그 밑에 원래부터 있던 인라인 결과 카드가 그대로 드러난다.
+        ValueListenableBuilder<bool>(
+          valueListenable: FittingProgress.collapsed,
+          builder: (context, collapsed, _) {
+            final isBusy =
+                widget.jobController.isAnalyzing || widget.jobController.isGeneratingFitting;
+            if (!isBusy || collapsed) return const SizedBox.shrink();
+            return _buildLoadingPopupOverlay();
+          },
         ),
       ],
     );
@@ -959,6 +980,21 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
+  // ── 로딩 대기 팝업(순수 대기 화면 — 결과/점수/피팅 이미지는 절대 안 들어간다) ──
+  // 배경을 탭해도 닫히지 않고 팝업 안의 접기 버튼으로만 닫힌다.
+  Widget _buildLoadingPopupOverlay() {
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: () {},
+        child: Container(
+          color: Colors.black.withValues(alpha: 0.5),
+          alignment: Alignment.center,
+          child: _FittingLoadingPopup(selectedItems: widget.selectedItems),
+        ),
+      ),
+    );
+  }
+
   // ── 분석 완료 결과 카드 ──────────────────────────────────
   Widget _buildResultCard() {
     final fittingImage = widget.jobController.fittingImage;
@@ -1408,6 +1444,234 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
+}
+
+// 팝업 슬라이드 한 장 — 보여줄 아이템과 그 아래 캡션(추천 이유 또는 팁).
+typedef _PopupSlide = ({WardrobeItem item, String caption});
+
+// 로딩 대기 팝업의 콤팩트 카드 — 화면 폭의 80%, 내용에 맞는 세로 크기.
+// 지금 피팅 중인 옷들과 어울리는 "다른 카테고리" 아이템을 OutfitMatcher로
+// 로컬 매칭해(Gemini 호출 없음) 큰 이미지+짧은 이유로 3초마다 자동
+// 슬라이드한다. 매칭 후보가 없으면 현재 피팅 중인 옷 + style_tips 팁으로
+// 폴백한다. 순수 표시용 — FittingJobController 등 파이프라인 상태는
+// 절대 건드리지 않는다.
+class _FittingLoadingPopup extends StatefulWidget {
+  final Map<String, WardrobeItem?> selectedItems;
+
+  const _FittingLoadingPopup({required this.selectedItems});
+
+  @override
+  State<_FittingLoadingPopup> createState() => _FittingLoadingPopupState();
+}
+
+class _FittingLoadingPopupState extends State<_FittingLoadingPopup> {
+  late final PageController _pageController;
+  Timer? _timer;
+  List<_PopupSlide>? _slides; // null = 아직 계산 중
+  int _currentPage = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+    _loadSlides();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadSlides() async {
+    final slides = await _buildSuggestionSlides();
+    if (!mounted) return;
+    setState(() => _slides = slides);
+    _startAutoSlide();
+  }
+
+  void _startAutoSlide() {
+    final slides = _slides;
+    if (slides == null || slides.length <= 1) return;
+    _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!mounted || !_pageController.hasClients) return;
+      final next = ((_pageController.page ?? 0).round() + 1) % slides.length;
+      _pageController.animateToPage(next,
+          duration: const Duration(milliseconds: 450), curve: Curves.easeInOut);
+    });
+  }
+
+  // 지금 피팅 중인 각 아이템(상의/하의 등)을 앵커 삼아, 그 아이템과 어울리는
+  // 다른 카테고리 아이템은 물론 "같은 카테고리의 다른 선택지"도 후보에
+  // 넣는다(예: 피팅 중인 상의를 기준으로 다른 하의를, 피팅 중인 하의를
+  // 기준으로 다른 상의를). 제외하는 건 지금 피팅 중인 그 아이템 자체
+  // (itemId)뿐 — 카테고리 전체를 제외하지 않는다. 카테고리당 상위 2개까지
+  // 모아 전체를 궁합 점수순으로 정렬해 최대 5장. 로컬 계산만 하므로
+  // Gemini 호출은 0회. 후보가 하나도 없으면(옷장이 빈약하거나 매칭 실패)
+  // 현재 피팅 중인 옷 + style_tips 팁으로 폴백.
+  Future<List<_PopupSlide>> _buildSuggestionSlides() async {
+    final selected = widget.selectedItems.values.whereType<WardrobeItem>().toList();
+    final selectedWithAttrs = selected.where((i) => i.attributes != null).toList();
+
+    if (selectedWithAttrs.isNotEmpty) {
+      try {
+        final wardrobe = await FirestoreService.wardrobeStream().first;
+        final fittingIds = selected.map((i) => i.id).toSet();
+        const allCategories = ['상의', '하의', '아우터', '신발', '액세서리'];
+
+        final scored = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
+        for (final category in allCategories) {
+          // 같은 카테고리 자기 자신과 비교하는 건 의미가 없으니, 이 카테고리를
+          // 추천할 근거는 "다른 카테고리"의 피팅 아이템만 앵커로 삼는다.
+          final eligibleAnchors =
+              selectedWithAttrs.where((a) => a.category != category).toList();
+          if (eligibleAnchors.isEmpty) continue;
+
+          final pool = wardrobe
+              .where((i) =>
+                  i.category == category && i.attributes != null && !fittingIds.contains(i.id))
+              .toList();
+          if (pool.isEmpty) continue;
+
+          final perCategory = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
+          for (final candidate in pool) {
+            WardrobeItem? bestAnchor;
+            var bestScore = double.negativeInfinity;
+            for (final anchor in eligibleAnchors) {
+              final score =
+                  OutfitMatcher.compatibilityScore(anchor.attributes!, candidate.attributes!);
+              if (score > bestScore) {
+                bestScore = score;
+                bestAnchor = anchor;
+              }
+            }
+            if (bestAnchor != null) {
+              perCategory.add((item: candidate, anchor: bestAnchor, score: bestScore));
+            }
+          }
+          perCategory.sort((a, b) => b.score.compareTo(a.score));
+          scored.addAll(perCategory.take(2));
+        }
+
+        scored.sort((a, b) => b.score.compareTo(a.score));
+        if (scored.isNotEmpty) {
+          return scored
+              .take(5)
+              .map((s) =>
+                  (item: s.item, caption: buildOutfitReason(anchor: s.anchor, candidate: s.item)))
+              .toList();
+        }
+      } catch (e) {
+        debugPrint('[FITTING-POPUP] 추천 매칭 실패, 폴백으로 전환: $e');
+      }
+    }
+
+    // 폴백 — 현재 피팅 중인 옷 + 순환 팁.
+    if (selected.isEmpty) return const [];
+    return [
+      for (var i = 0; i < selected.length; i++)
+        (item: selected[i], caption: fittingStyleTips[i % fittingStyleTips.length]),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final slides = _slides;
+    return Container(
+      width: MediaQuery.of(context).size.width * 0.8,
+      padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.3), blurRadius: 24, offset: const Offset(0, 8)),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 200,
+            height: 200,
+            child: slides == null
+                ? const Center(
+                    child: CircularProgressIndicator(color: AppColors.navy, strokeWidth: 2))
+                : slides.isEmpty
+                    ? const Center(
+                        child: Icon(Icons.checkroom_outlined,
+                            color: AppColors.textDisabled, size: 48))
+                    : ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          color: AppColors.background,
+                          child: PageView.builder(
+                            controller: _pageController,
+                            itemCount: slides.length,
+                            onPageChanged: (i) => setState(() => _currentPage = i),
+                            itemBuilder: (context, i) {
+                              final item = slides[i].item;
+                              return Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: CachedNetworkImage(
+                                  imageUrl: item.cutoutImageUrl ?? item.imageUrl,
+                                  fit: BoxFit.contain,
+                                  placeholder: (_, __) => const SizedBox.shrink(),
+                                  errorWidget: (_, __, ___) => const Icon(
+                                      Icons.image_not_supported_outlined,
+                                      color: AppColors.textDisabled),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: 36,
+            child: Center(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 250),
+                child: Text(
+                  slides == null
+                      ? '분석 준비 중이에요...'
+                      : slides.isEmpty
+                          ? 'AI가 코디를 살펴보고 있어요...'
+                          : slides[_currentPage].caption,
+                  key: ValueKey(slides == null ? -1 : _currentPage),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 13, height: 1.4),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () => FittingProgress.collapsed.value = true,
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('접기',
+                      style: TextStyle(
+                          color: AppColors.textMuted, fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 3),
+                  const Icon(Icons.keyboard_arrow_down, color: AppColors.textMuted, size: 16),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ── 옷장 아이템 선택 바텀시트 ─────────────────────────────

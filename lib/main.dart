@@ -19,6 +19,7 @@ import 'screens/settings_screen.dart';
 import 'services/agent_planner.dart';
 import 'services/agent_sweeper.dart';
 import 'services/fitting_job_controller.dart';
+import 'services/fitting_progress.dart';
 import 'firebase_options.dart';
 
 void main() async {
@@ -178,11 +179,31 @@ class _AppShellState extends State<AppShell> {
 
   void _backFromDetail() => setState(() => _showItemDetail = false);
 
+  // 피팅룸 결과 카드를 접었을 때 나타나는 플로팅 아이콘 탭 — 피팅룸 탭으로
+  // 전환하고 카드를 다시 펼친다(완료 상태 아이콘을 탭했을 때도 동일).
+  void _openFittingRoomFromFloatingIcon() {
+    FittingProgress.collapsed.value = false;
+    setState(() {
+      _tabIndex = 2;
+      _showItemDetail = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(child: _buildBody()),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            _buildBody(),
+            _FloatingFittingIcon(
+              jobController: _fittingJob,
+              onTap: _openFittingRoomFromFloatingIcon,
+            ),
+          ],
+        ),
+      ),
       bottomNavigationBar: _showItemDetail
           ? null
           : _BottomNav(
@@ -229,6 +250,215 @@ class _AppShellState extends State<AppShell> {
           onOpenFittingRoom: _sendRecommendationToFittingRoom,
         );
     }
+  }
+}
+
+// ── 피팅룸 진행 상황 플로팅 아이콘 ────────────────────────
+// 결과 카드를 접었을 때(FittingProgress.collapsed) 어느 탭에서든 계속
+// 보이는 드래그 가능한 배지. FittingJobController를 구독만 하고 절대
+// 상태를 바꾸지 않는다(순수 UI 레이어).
+enum _FittingIconPhase { hidden, running, success, error }
+
+class _FloatingFittingIcon extends StatefulWidget {
+  final FittingJobController jobController;
+  final VoidCallback onTap;
+
+  const _FloatingFittingIcon({required this.jobController, required this.onTap});
+
+  @override
+  State<_FloatingFittingIcon> createState() => _FloatingFittingIconState();
+}
+
+class _FloatingFittingIconState extends State<_FloatingFittingIcon>
+    with SingleTickerProviderStateMixin {
+  static const _size = 56.0;
+  static const _margin = 16.0;
+
+  _FittingIconPhase _phase = _FittingIconPhase.hidden;
+  bool _wasBusy = false;
+  Timer? _autoHideTimer;
+  late final AnimationController _bounceController;
+  late final Animation<double> _bounceScale;
+
+  double? _left;
+  double? _top;
+
+  // onTap과 onPanUpdate를 GestureDetector에 함께 배선하면 제스처 아레나에서
+  // 탭 인식기가 이겨버려 드래그가 무시되는 경우가 있다. 그래서 onTap은 아예
+  // 쓰지 않고, onPanDown/Update/End로만 직접 탭-드래그를 판별한다: 누른
+  // 뒤 뗄 때까지의 누적 이동 거리가 임계값 이하면 탭으로, 넘으면 드래그로
+  // 처리한다.
+  static const _tapSlop = 8.0;
+  double _dragDistance = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.jobController.addListener(_onJobChanged);
+    FittingProgress.collapsed.addListener(_onCollapsedChanged);
+    _bounceController =
+        AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _bounceScale = TweenSequence<double>([
+      TweenSequenceItem(
+          tween: Tween(begin: 1.0, end: 1.3).chain(CurveTween(curve: Curves.easeOut)), weight: 50),
+      TweenSequenceItem(
+          tween: Tween(begin: 1.3, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 50),
+    ]).animate(_bounceController);
+    _refreshPhase();
+  }
+
+  @override
+  void dispose() {
+    widget.jobController.removeListener(_onJobChanged);
+    FittingProgress.collapsed.removeListener(_onCollapsedChanged);
+    _autoHideTimer?.cancel();
+    _bounceController.dispose();
+    super.dispose();
+  }
+
+  void _onCollapsedChanged() => _refreshPhase();
+
+  void _onJobChanged() {
+    final busy = widget.jobController.isBusy;
+    final justFinished = _wasBusy && !busy;
+    _wasBusy = busy;
+    _refreshPhase();
+    if (justFinished && _phase == _FittingIconPhase.success) {
+      _bounceController.forward(from: 0);
+    }
+  }
+
+  // 컨트롤러의 현재 상태로부터 아이콘 단계를 다시 계산한다. collapse
+  // 시점에 이미 완료/실패 상태였던 경우도 이 재계산 덕에 바로 반영된다.
+  void _refreshPhase() {
+    final c = widget.jobController;
+    final _FittingIconPhase next;
+    if (c.isBusy) {
+      next = _FittingIconPhase.running;
+    } else if (c.analysisError != null || c.fittingError != null) {
+      next = _FittingIconPhase.error;
+    } else if (c.analysisResult != null || c.fittingImage != null || c.fittingImageUrl != null) {
+      next = _FittingIconPhase.success;
+    } else {
+      next = _FittingIconPhase.hidden;
+    }
+    if (next == _FittingIconPhase.running) {
+      _autoHideTimer?.cancel();
+    } else if (next != _phase) {
+      _scheduleAutoHide();
+    }
+    if (mounted) setState(() => _phase = next);
+  }
+
+  void _scheduleAutoHide() {
+    _autoHideTimer?.cancel();
+    _autoHideTimer = Timer(const Duration(seconds: 30), () {
+      if (mounted) setState(() => _phase = _FittingIconPhase.hidden);
+    });
+  }
+
+  void _handleTap() {
+    _autoHideTimer?.cancel();
+    widget.onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: FittingProgress.collapsed,
+      builder: (context, collapsed, _) {
+        if (!collapsed || _phase == _FittingIconPhase.hidden) return const SizedBox.shrink();
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final maxW = constraints.maxWidth;
+            final maxH = constraints.maxHeight;
+            if (maxW <= _size || maxH <= _size) return const SizedBox.shrink();
+            _left ??= maxW - _size - _margin;
+            _top ??= maxH - _size - _margin;
+            final minLeft = _margin;
+            final maxLeft = (maxW - _size - _margin).clamp(minLeft, double.infinity);
+            final minTop = _margin;
+            final maxTop = (maxH - _size - _margin).clamp(minTop, double.infinity);
+            final left = _left!.clamp(minLeft, maxLeft);
+            final top = _top!.clamp(minTop, maxTop);
+
+            return Positioned(
+              left: left,
+              top: top,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanDown: (_) {
+                  _dragDistance = 0;
+                },
+                onPanUpdate: (details) {
+                  _dragDistance += details.delta.distance;
+                  setState(() {
+                    _left = (_left! + details.delta.dx).clamp(minLeft, maxLeft);
+                    _top = (_top! + details.delta.dy).clamp(minTop, maxTop);
+                  });
+                },
+                onPanEnd: (_) {
+                  if (_dragDistance < _tapSlop) _handleTap();
+                },
+                child: AnimatedBuilder(
+                  animation: _bounceController,
+                  builder: (context, child) => Transform.scale(
+                    scale: _phase == _FittingIconPhase.success ? _bounceScale.value : 1.0,
+                    child: child,
+                  ),
+                  child: _buildBadge(),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildBadge() {
+    late final Color bg;
+    late final Widget icon;
+    switch (_phase) {
+      case _FittingIconPhase.running:
+        bg = AppColors.navy;
+        icon = const Icon(Icons.checkroom, color: Colors.white, size: 24);
+        break;
+      case _FittingIconPhase.success:
+        bg = AppColors.blue;
+        icon = const Icon(Icons.check, color: Colors.white, size: 26);
+        break;
+      case _FittingIconPhase.error:
+        bg = AppColors.red;
+        icon = const Icon(Icons.priority_high, color: Colors.white, size: 26);
+        break;
+      case _FittingIconPhase.hidden:
+        bg = AppColors.navy;
+        icon = const SizedBox.shrink();
+    }
+    return Container(
+      width: _size,
+      height: _size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: bg,
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25), blurRadius: 12, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (_phase == _FittingIconPhase.running)
+            const Padding(
+              padding: EdgeInsets.all(4),
+              child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white70),
+            ),
+          icon,
+        ],
+      ),
+    );
   }
 }
 

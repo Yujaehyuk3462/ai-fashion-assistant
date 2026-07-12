@@ -37,6 +37,10 @@ class OutfitMatcher {
     '화이트', '블랙', '네이비', '그레이', '베이지', '아이보리', '카키', '그레이지',
   };
 
+  // 추천 이유 템플릿(outfit_reason.dart)이 "뉴트럴끼리인지/포인트 컬러인지"
+  // 판단할 때 재사용하는 공개 창구.
+  static const Set<String> neutralColors = _neutralColors;
+
   // 기존 단일 조합 API — 후보 목록의 1순위(카테고리별 최고점 조합)를 그대로
   // 돌려준다. 자기 평가 루프를 쓰지 않는 호출부를 위해 유지한다.
   static OutfitMatch? findBestMatch({
