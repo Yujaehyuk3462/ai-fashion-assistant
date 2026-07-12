@@ -307,34 +307,41 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _buildEmptyDay() {
     final future = _isFuture(_selectedDay);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(future ? Icons.event_outlined : Icons.checkroom_outlined,
-                color: AppColors.textDisabled, size: 40),
-            const SizedBox(height: 12),
-            Text(
-                future
-                    ? '${_selectedDay.month}월 ${_selectedDay.day}일 일정을 등록해보세요'
-                    : '${_selectedDay.month}월 ${_selectedDay.day}일 기록이 없어요',
-                style: const TextStyle(
-                    color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 6),
-            Text(
-                future
-                    ? 'TPO 태그를 남기면 에이전트가 코디를 미리 준비해요'
-                    : '오늘 입은 착장을 기록해보세요',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
-            const SizedBox(height: 16),
-            // 미래 날짜엔 "일정 태그 등록"을, 오늘/과거엔 "착장 기록하기"를 제공.
-            future ? _scheduleButton(compact: false) : _addButton(compact: false),
-          ],
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(future ? Icons.event_outlined : Icons.checkroom_outlined,
+                      color: AppColors.textDisabled, size: 40),
+                  const SizedBox(height: 12),
+                  Text(
+                      future
+                          ? '${_selectedDay.month}월 ${_selectedDay.day}일 일정을 등록해보세요'
+                          : '${_selectedDay.month}월 ${_selectedDay.day}일 기록이 없어요',
+                      style: const TextStyle(
+                          color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  Text(
+                      future
+                          ? 'TPO 태그를 남기면 에이전트가 코디를 미리 준비해요'
+                          : '오늘 입은 착장을 기록해보세요',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                  const SizedBox(height: 16),
+                  // 미래 날짜엔 "일정 태그 등록"을, 오늘/과거엔 "착장 기록하기"를 제공.
+                  future ? _scheduleButton(compact: false) : _addButton(compact: false),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
