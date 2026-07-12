@@ -18,7 +18,10 @@ class GeminiService {
 
   // 기본 텍스트 모델이 과부하(503)·요청 급증(429)·타임아웃으로 실패했을 때
   // 같은 모델로 다시 두드리는 대신 바꿔 타는 대체 모델.
-  static const textModelFallback = 'gemini-2.5-flash';
+  // gemini-2.5-flash가 "no longer available to new users" 오류로 막혀
+  // gemini-3.1-flash-lite로 교체(ListModels로 모델명 확인 + generateContent
+  // 실호출 성공 검증 완료 — 2026-07-12). Lite라 응답도 더 빠르다.
+  static const textModelFallback = 'gemini-3.1-flash-lite';
 
   // extractAttributes/extractSizeFromChart/analyzeOutfitFromAttributes(Stream)
   // 등 텍스트 모델을 쓰는 모든 호출에 공통 적용하는 재시도 정책 — 기본
