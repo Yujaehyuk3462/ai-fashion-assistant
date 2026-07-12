@@ -63,8 +63,14 @@
   - 이미지 크롭 문제(`BoxFit.cover`)를 `BoxFit.contain` + 배경색으로 수정.
 - `lib/services/fitting_progress.dart` (신규): 팝업 접힘 상태를 앱 전역에서 공유하는 `ValueNotifier<bool>`.
 - 플로팅 아이콘 드래그: `GestureDetector`에서 `onTap`과 `onPanUpdate`를 함께 배선하면 제스처 아레나에서 탭이 드래그를 가로채는 문제가 있어, `onTap`을 쓰지 않고 `onPanDown/Update/End`로 직접 탭-드래그를 판별하도록 변경(누적 이동 거리가 임계값 이하면 탭, 넘으면 드래그로 처리). 화면 가장자리 안전 여백을 두고 clamp.
-  - ⚠️ 이 드래그 수정은 `flutter analyze`는 통과했지만 **실기기 동작 검증은 아직 완료되지 않았다.** 다음 세션에서 (a) 꾹 눌러 드래그 시 따라 움직이는지 (b) 화면 밖으로 안 나가는지 (c) 탭 시 기존처럼 피팅룸 이동+팝업 펼침이 되는지 확인 필요.
 - 홈 화면 인사말 하드코딩 이름 수정: `'민준님'` → `'디티오님'`.
+
+## 8. 플로팅 피팅 아이콘 드래그 안 되던 문제 수정 (`382d75e`)
+
+- 7번 항목 배포 후 실기기에서 드래그해도 아이콘이 전혀 움직이지 않는 문제 재발견. 처음엔 제스처 아레나 경쟁을 의심했지만, `onPanDown`/`onPanUpdate`에 디버그 로그를 심어 확인해보니 팬 이벤트 자체는 정상적으로(누적 이동거리 50~100 이상) 계속 들어오고 있었음 — 즉 제스처 인식 문제가 아니었음.
+- 실기기 로그에서 `panUpdate`가 찍힐 때마다 `Incorrect use of ParentDataWidget` 예외가 함께 던져지는 것을 발견하며 진짜 원인 확인: `Positioned`를 `LayoutBuilder`의 builder 콜백 **안**에서 반환하고 있었는데, `LayoutBuilder` 자체가 `RenderObjectWidget`이라 `Positioned`가 `Stack`이 아니라 `LayoutBuilder`의 RenderObject에 `StackParentData`를 적용하려다 매 드래그 프레임마다 예외가 발생 — 좌표(`_left`/`_top`)는 정상적으로 갱신되고 있었지만 그 갱신이 화면에 전혀 반영되지 않고 있었음.
+- 제약(constraints)을 읽는 `LayoutBuilder`를 `AppShell`의 `Stack` 바깥으로 끌어올리고 `maxWidth`/`maxHeight`를 `_FloatingFittingIcon`에 생성자 파라미터로 전달, `Positioned`가 `Stack`의 (비-RenderObjectWidget 래퍼만 거친) 직계 자손이 되도록 재구성해서 해결.
+- 실기기에서 (a) 꾹 눌러 드래그 시 아이콘이 실제로 따라 움직이는 것, (b) 탭 시 기존처럼 피팅룸 이동+팝업 펼침이 되는 것을 사용자가 직접 확인.
 
 ## 지켜야 할 작업 원칙 (재확인)
 
@@ -85,5 +91,6 @@
 | `fdf7919` | 세션 정리 문서 공백 정리 |
 | `ab31f7d` | Gemini 텍스트 폴백 모델을 gemini-3.1-flash-lite로 교체 |
 | `0852b2d` | AI 피팅 로딩 팝업 + 플로팅 진행 아이콘 + 추천 옷 슬라이드 |
+| `382d75e` | 플로팅 피팅 아이콘 드래그 안 되던 문제 수정 (ParentDataWidget 오류) |
 
-모두 `origin/main`에 push 완료, 워킹 트리 클린. 미완료 항목은 위 7번 항목의 플로팅 아이콘 드래그 실기기 검증뿐.
+모두 `origin/main`에 push 완료, 워킹 트리 클린. 미완료 항목 없음(실기기 검증까지 완료).
