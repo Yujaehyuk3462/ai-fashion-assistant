@@ -194,14 +194,28 @@ class _AppShellState extends State<AppShell> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Stack(
-          children: [
-            _buildBody(),
-            _FloatingFittingIcon(
-              jobController: _fittingJob,
-              onTap: _openFittingRoomFromFloatingIcon,
-            ),
-          ],
+        // Positioned는 Stack의 직계 RenderObjectWidget 자손이어야 하므로,
+        // 제약을 읽기 위한 LayoutBuilder는 Stack 바깥(위)에서 한 번만 감싸고
+        // 그 결과값만 _FloatingFittingIcon에 넘긴다. LayoutBuilder를 Stack
+        // 안쪽(_FloatingFittingIcon.build() 내부)에 두면 LayoutBuilder 자체가
+        // RenderObjectWidget이라 Positioned가 Stack이 아니라 LayoutBuilder의
+        // RenderObject에 StackParentData를 적용하려다 실패한다
+        // ("Incorrect use of ParentDataWidget" — 매 드래그 프레임마다 예외가
+        // 던져지면서 위치 갱신이 반영되지 않아 아이콘이 움직이지 않던 원인).
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Stack(
+              children: [
+                _buildBody(),
+                _FloatingFittingIcon(
+                  jobController: _fittingJob,
+                  onTap: _openFittingRoomFromFloatingIcon,
+                  maxWidth: constraints.maxWidth,
+                  maxHeight: constraints.maxHeight,
+                ),
+              ],
+            );
+          },
         ),
       ),
       bottomNavigationBar: _showItemDetail
@@ -262,8 +276,15 @@ enum _FittingIconPhase { hidden, running, success, error }
 class _FloatingFittingIcon extends StatefulWidget {
   final FittingJobController jobController;
   final VoidCallback onTap;
+  final double maxWidth;
+  final double maxHeight;
 
-  const _FloatingFittingIcon({required this.jobController, required this.onTap});
+  const _FloatingFittingIcon({
+    required this.jobController,
+    required this.onTap,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
 
   @override
   State<_FloatingFittingIcon> createState() => _FloatingFittingIconState();
@@ -367,50 +388,46 @@ class _FloatingFittingIconState extends State<_FloatingFittingIcon>
     return ValueListenableBuilder<bool>(
       valueListenable: FittingProgress.collapsed,
       builder: (context, collapsed, _) {
+        final maxW = widget.maxWidth;
+        final maxH = widget.maxHeight;
         if (!collapsed || _phase == _FittingIconPhase.hidden) return const SizedBox.shrink();
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final maxW = constraints.maxWidth;
-            final maxH = constraints.maxHeight;
-            if (maxW <= _size || maxH <= _size) return const SizedBox.shrink();
-            _left ??= maxW - _size - _margin;
-            _top ??= maxH - _size - _margin;
-            final minLeft = _margin;
-            final maxLeft = (maxW - _size - _margin).clamp(minLeft, double.infinity);
-            final minTop = _margin;
-            final maxTop = (maxH - _size - _margin).clamp(minTop, double.infinity);
-            final left = _left!.clamp(minLeft, maxLeft);
-            final top = _top!.clamp(minTop, maxTop);
+        if (maxW <= _size || maxH <= _size) return const SizedBox.shrink();
+        _left ??= maxW - _size - _margin;
+        _top ??= maxH - _size - _margin;
+        final minLeft = _margin;
+        final maxLeft = (maxW - _size - _margin).clamp(minLeft, double.infinity);
+        final minTop = _margin;
+        final maxTop = (maxH - _size - _margin).clamp(minTop, double.infinity);
+        final left = _left!.clamp(minLeft, maxLeft);
+        final top = _top!.clamp(minTop, maxTop);
 
-            return Positioned(
-              left: left,
-              top: top,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanDown: (_) {
-                  _dragDistance = 0;
-                },
-                onPanUpdate: (details) {
-                  _dragDistance += details.delta.distance;
-                  setState(() {
-                    _left = (_left! + details.delta.dx).clamp(minLeft, maxLeft);
-                    _top = (_top! + details.delta.dy).clamp(minTop, maxTop);
-                  });
-                },
-                onPanEnd: (_) {
-                  if (_dragDistance < _tapSlop) _handleTap();
-                },
-                child: AnimatedBuilder(
-                  animation: _bounceController,
-                  builder: (context, child) => Transform.scale(
-                    scale: _phase == _FittingIconPhase.success ? _bounceScale.value : 1.0,
-                    child: child,
-                  ),
-                  child: _buildBadge(),
-                ),
+        return Positioned(
+          left: left,
+          top: top,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanDown: (_) {
+              _dragDistance = 0;
+            },
+            onPanUpdate: (details) {
+              _dragDistance += details.delta.distance;
+              setState(() {
+                _left = (_left! + details.delta.dx).clamp(minLeft, maxLeft);
+                _top = (_top! + details.delta.dy).clamp(minTop, maxTop);
+              });
+            },
+            onPanEnd: (_) {
+              if (_dragDistance < _tapSlop) _handleTap();
+            },
+            child: AnimatedBuilder(
+              animation: _bounceController,
+              builder: (context, child) => Transform.scale(
+                scale: _phase == _FittingIconPhase.success ? _bounceScale.value : 1.0,
+                child: child,
               ),
-            );
-          },
+              child: _buildBadge(),
+            ),
+          ),
         );
       },
     );
