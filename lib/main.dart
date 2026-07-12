@@ -17,6 +17,7 @@ import 'screens/calendar_screen.dart';
 import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/agent_planner.dart';
+import 'services/agent_sweeper.dart';
 import 'services/fitting_job_controller.dart';
 import 'firebase_options.dart';
 
@@ -108,11 +109,17 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
-    // 레벨 1 선제 추천: 앱 진입 시 1회, 다가오는 일정을 감지해 백그라운드에서
-    // 미리 추천을 준비한다. 부가 기능이라 실패해도 조용히 무시한다.
+    // 상태 지속성(복구) → 레벨 1 선제 추천 순으로 앱 진입 시 1회씩 실행한다.
+    // 복구가 새 작업보다 우선이고, 둘 다 Gemini를 호출할 수 있어 동시에
+    // 겹치지 않도록 순차 실행 + 짧은 간격을 둔다(과부하 시 호출이 한꺼번에
+    // 몰리는 것을 완화). 부가 기능이라 실패해도 조용히 무시한다.
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      unawaited(AgentPlanner.runProactiveCheck(uid));
+      unawaited(() async {
+        await AgentSweeper.run(uid);
+        await Future.delayed(const Duration(seconds: 2));
+        await AgentPlanner.runProactiveCheck(uid);
+      }());
     }
   }
 

@@ -33,6 +33,11 @@ class RecommendationEntry {
   // ── 레벨 4: 실패 대응 ──
   // 해당 TPO 격식에 딱 맞는 조합이 없어 "가장 가까운 차선"으로 채운 경우.
   final bool isFallback;
+  // ── 진단-수리 루프 ── 자기 평가 총점이 기준 미달일 때 어떤 아이템을
+  // 교체해 다시 평가했는지. repairAttempted가 true일 때만 카드에 "한 번
+  // 다듬었다"는 문구를 보여준다.
+  final bool repairAttempted;
+  final String? repairNote; // 예: "아우터 교체(격식 개선)"
 
   const RecommendationEntry({
     required this.id,
@@ -51,6 +56,8 @@ class RecommendationEntry {
     this.userChosenItemIds = const [],
     this.reflectedFeedback = false,
     this.isFallback = false,
+    this.repairAttempted = false,
+    this.repairNote,
   });
 
   factory RecommendationEntry.fromFirestore(DocumentSnapshot doc) {
@@ -77,6 +84,8 @@ class RecommendationEntry {
           (data['userChosenItemIds'] as List?)?.map((e) => e.toString()).toList() ?? const [],
       reflectedFeedback: data['reflectedFeedback'] as bool? ?? false,
       isFallback: data['isFallback'] as bool? ?? false,
+      repairAttempted: data['repairAttempted'] as bool? ?? false,
+      repairNote: data['repairNote'] as String?,
     );
   }
 
@@ -99,5 +108,7 @@ class RecommendationEntry {
         if (userChosenItemIds.isNotEmpty) 'userChosenItemIds': userChosenItemIds,
         if (reflectedFeedback) 'reflectedFeedback': reflectedFeedback,
         if (isFallback) 'isFallback': isFallback,
+        if (repairAttempted) 'repairAttempted': repairAttempted,
+        if (repairNote != null) 'repairNote': repairNote,
       };
 }

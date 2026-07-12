@@ -8,6 +8,7 @@ import '../constants/style_tips.dart';
 import '../models/outfit_history_entry.dart';
 import '../models/recommendation_entry.dart';
 import '../models/wardrobe_item.dart';
+import '../services/agent_activity.dart';
 import '../services/agent_planner.dart';
 import '../services/firestore_service.dart';
 import 'agent_log_screen.dart';
@@ -69,16 +70,125 @@ class _RecommendationCard extends StatelessWidget {
       stream: FirestoreService.recommendationStream(uid),
       builder: (context, snapshot) {
         final entry = snapshot.data;
-        if (entry == null) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-          child: _RecommendationCardBody(
-            key: ValueKey(entry.id),
-            entry: entry,
-            onOpenFittingRoom: onOpenFittingRoom,
-          ),
+        if (entry != null) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+            child: _RecommendationCardBody(
+              key: ValueKey(entry.id),
+              entry: entry,
+              onOpenFittingRoom: onOpenFittingRoom,
+            ),
+          );
+        }
+        // 추천 카드가 아직 없을 때만 "에이전트 작업 중" 인디케이터를 보여준다.
+        // 파이프라인이 끝나 추천이 저장되면 위 스트림이 갱신되며 자연스럽게
+        // 카드로 교체된다.
+        return ValueListenableBuilder<String?>(
+          valueListenable: AgentActivity.current,
+          builder: (context, activity, _) {
+            if (activity == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: _AgentActivityIndicator(message: activity),
+            );
+          },
         );
       },
+    );
+  }
+}
+
+// 능동 추천 파이프라인이 도는 동안 카드 자리에 보여주는 얇은 상태 표시.
+// 실패로 끝나면(AgentActivity가 null이 되면) 조용히 사라진다 — 별도의
+// 에러 카드는 없다.
+class _AgentActivityIndicator extends StatefulWidget {
+  final String message;
+
+  const _AgentActivityIndicator({required this.message});
+
+  @override
+  State<_AgentActivityIndicator> createState() => _AgentActivityIndicatorState();
+}
+
+class _AgentActivityIndicatorState extends State<_AgentActivityIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))
+      ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.blue.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: AppColors.bluePale,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.auto_awesome, color: AppColors.blue, size: 14),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              widget.message,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) {
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(3, (i) {
+                  final t = (_controller.value - i * 0.2) % 1.0;
+                  final opacity = (t < 0.5 ? t * 2 : 2 - t * 2).clamp(0.25, 1.0);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                    child: Opacity(
+                      opacity: opacity,
+                      child: Container(
+                        width: 5,
+                        height: 5,
+                        decoration: const BoxDecoration(
+                          color: AppColors.blue,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }
@@ -97,6 +207,10 @@ class _RecommendationCardBody extends StatelessWidget {
   // 새 옷 추천은 "선정/찾았어요" 어투로 구분한다.
   static String _loopSummary(RecommendationEntry entry) {
     final score = entry.colorScore;
+    // 진단-수리 루프가 실제로 조합을 교체했다면 그 사실을 가장 먼저 보여준다.
+    if (entry.repairAttempted && score != null) {
+      return '조합을 한 번 다듬어 $score점으로 완성했어요';
+    }
     if (entry.targetDate != null) {
       final tpo = entry.targetTpoTag != null ? '[${entry.targetTpoTag}]' : '이 일정';
       // 레벨 4: 차선 조합은 솔직하게 표시(거짓 만족 금지).

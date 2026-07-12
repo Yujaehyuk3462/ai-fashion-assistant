@@ -155,6 +155,32 @@ class OutfitMatcher {
     return combos;
   }
 
+  // 진단-수리 루프(OutfitSelfEvaluator)가 "어떤 아이템이 문제인지" 판단할 때
+  // 재사용하는 공개 래퍼들.
+  static double compatibilityScore(ClothingAttributes a, ClothingAttributes b) =>
+      _compatibilityScore(a, b);
+
+  static int formalityRankOf(String formality) => _formalityRank[formality] ?? 0;
+
+  // 진단-수리 루프 전용 — 특정 카테고리의 아이템을 다른 후보로 교체할 때 쓴다.
+  // referenceAttrs(새 옷의 attributes)와 궁합이 가장 좋은, excludeIds에 없는
+  // wardrobe 아이템을 그 카테고리에서 하나 고른다. 없으면 null.
+  static WardrobeItem? findReplacementFor({
+    required String category,
+    required List<WardrobeItem> wardrobe,
+    required ClothingAttributes referenceAttrs,
+    required Set<String> excludeIds,
+  }) {
+    final pool = wardrobe
+        .where((i) =>
+            i.category == category && i.attributes != null && !excludeIds.contains(i.id))
+        .toList();
+    if (pool.isEmpty) return null;
+    pool.sort((a, b) => _compatibilityScore(referenceAttrs, b.attributes!)
+        .compareTo(_compatibilityScore(referenceAttrs, a.attributes!)));
+    return pool.first;
+  }
+
   static double _compatibilityScore(ClothingAttributes a, ClothingAttributes b) {
     double score = 0;
 

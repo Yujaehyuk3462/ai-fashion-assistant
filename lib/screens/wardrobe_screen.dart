@@ -9,17 +9,15 @@ import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../data/wardrobe_data.dart' show categories;
-import '../models/agent_log_entry.dart';
+import '../models/agent_task.dart';
 import '../models/clothing_attributes.dart';
 import '../models/clothing_size.dart';
-import '../models/recommendation_entry.dart';
 import '../models/user_profile.dart';
 import '../models/wardrobe_item.dart';
+import '../services/agent_planner.dart';
 import '../services/fit_predictor.dart';
 import '../services/firestore_service.dart';
 import '../services/gemini_service.dart';
-import '../services/outfit_matcher.dart';
-import '../services/outfit_self_evaluator.dart';
 import '../services/storage_service.dart';
 
 const _uploadCategories = ['상의', '하의', '아우터', '신발', '액세서리', '전신'];
@@ -29,165 +27,61 @@ const _uploadCategories = ['상의', '하의', '아우터', '신발', '액세서
 const _sizeInputCategories = {'상의', '하의', '아우터'};
 
 // 위젯과 무관하게 실행되는 백그라운드 작업 — 업로드 화면을 벗어나도
-// 계속 진행되고, 실패해도 조용히 무시한다(분석 시점 폴백이 나중에 채운다).
+// 계속 진행되고, 실패한 지점은 조용히 삼키는 대신 재시도 태스크로 남긴다
+// (AgentSweeper가 다음 앱 실행 때 발견해 재개한다). 파이프라인 자체(속성
+// 추출 재시도 정책, 매칭→자기평가→저장)는 agent_planner.dart에 있다 —
+// AgentSweeper도 같은 로직을 재사용해야 하기 때문.
 Future<void> _extractAndCacheAttributes(
   String itemId,
   String imageUrl,
   String category,
 ) async {
   debugPrint('[RECOMMEND] 속성 추출 시작: id=$itemId, category=$category');
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  ClothingAttributes attributes;
   try {
-    final attributes = await _extractAttributesWithRetry(imageUrl, category);
+    attributes = await AgentPlanner.extractAttributesWithRetry(imageUrl, category);
     debugPrint('[RECOMMEND] 속성 추출 완료: color=${attributes.color}, style=${attributes.style}');
-    await FirestoreService.updateWardrobeAttributes(itemId, attributes);
-    // "능동 추천" 파이프라인은 속성이 준비된 직후에만 의미가 있고, 실패해도
-    // 옷 등록 자체를 막으면 안 되므로 별도의 조용한 백그라운드 작업으로 흘려보낸다.
-    unawaited(_generateRecommendationSilently(
-      WardrobeItem(
-        id: itemId,
-        imageUrl: imageUrl,
-        category: category,
-        createdAt: DateTime.now(),
-        attributes: attributes,
-      ),
-    ));
   } catch (e) {
     // 업로드 자체는 이미 끝난 뒤라 실패를 사용자에게 노출하지 않는다.
     // 분석 시점 폴백(FittingJobController._resolveAttributes)이 나중에 채운다.
     debugPrint('[속성추출] 실패: $e');
-  }
-}
-
-// ── 능동 추천: 새 옷 등록 → 로컬 매칭(후보 2~3개) → 자기 평가 루프 → 저장 ──
-// 추천은 부가 기능이라, 어느 단계에서 실패하든 조용히 무시한다
-// (fitting_cache 저장, 속성 백필과 동일한 실패 처리 패턴). 각 단계 진입/이탈을
-// [RECOMMEND] 로그로 남겨 파이프라인이 어디서 멈추는지 진단할 수 있게 한다.
-
-Future<void> _generateRecommendationSilently(WardrobeItem newItem) async {
-  debugPrint('[RECOMMEND] 파이프라인 시작: 새 옷 id=${newItem.id}, category=${newItem.category}');
-  try {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      debugPrint('[RECOMMEND] 중단 — 로그인된 사용자 없음(uid null)');
-      return;
+    if (uid != null) {
+      unawaited(FirestoreService.enqueueAgentTaskSilently(
+        uid,
+        AgentTask.create(
+          type: AgentTask.typeExtractAttributes,
+          payload: {'itemId': itemId},
+          lastError: '$e',
+        ),
+      ));
     }
-
-    // 활동 로그: 파이프라인 전체 이벤트는 트리거된 옷 id를 상관 id로 공유해
-    // (등록 문서 id는 마지막에야 생기므로) 활동 내역 화면에서 하나로 묶인다.
-    final itemLabel = _agentItemLabel(newItem);
-    unawaited(FirestoreService.addAgentLogSilently(
-      uid,
-      AgentLogEntry(
-        id: '',
-        eventType: AgentLogEntry.typeNewItemDetected,
-        message: '새 옷($itemLabel) 등록을 감지했습니다',
-        relatedDocId: newItem.id,
-      ),
-    ));
-
-    final existingItems = await FirestoreService.wardrobeStream().first;
-    final candidates = OutfitMatcher.findCandidateMatches(
-      newItem: newItem,
-      existingItems: existingItems,
-    );
-    // 매칭 실패/성공 이유는 OutfitMatcher가 이미 [RECOMMEND] 로그로 남긴다.
-    if (candidates.isEmpty) return;
-
-    final comparedCount = existingItems.where((i) => i.id != newItem.id).length;
-    unawaited(FirestoreService.addAgentLogSilently(
-      uid,
-      AgentLogEntry(
-        id: '',
-        eventType: AgentLogEntry.typeCandidatesGenerated,
-        message: '옷장 $comparedCount벌과 대조해 후보 ${candidates.length}개 조합을 생성했습니다',
-        relatedDocId: newItem.id,
-      ),
-    ));
-
-    // 자기 평가 루프 — 새 옷 조합과 TPO(일정) 조합이 공유하는 공통 루프
-    // (OutfitSelfEvaluator). 각 후보 평가 결과를 onStep에서 받아, 트리거된 옷
-    // id를 상관 id로 묶어 활동 로그에 남긴다.
-    final outcome = await OutfitSelfEvaluator.run(
-      candidates,
-      onStep: ({required index, required total, score, required passed, required wasError}) {
-        final String message;
-        if (wasError) {
-          message = '후보 ${index + 1} 평가: Gemini 호출 실패로 건너뛰고 다음 후보 검토';
-        } else {
-          final scoreText = score != null ? '$score점' : '점수 파싱 실패';
-          final verdict = passed
-              ? '기준(${OutfitSelfEvaluator.threshold}점) 통과, 채택'
-              : (index < total - 1 ? '기준 미달로 다음 후보 검토' : '기준 미달');
-          message = '후보 ${index + 1} 평가: $scoreText — $verdict';
-        }
-        unawaited(FirestoreService.addAgentLogSilently(
-          uid,
-          AgentLogEntry(
-            id: '',
-            eventType: AgentLogEntry.typeCandidateEvaluated,
-            message: message,
-            relatedDocId: newItem.id,
-          ),
-        ));
-      },
-    );
-    if (outcome == null) return;
-
-    final entry = RecommendationEntry(
-      id: '',
-      itemIds: outcome.bestMatch.items.map((i) => i.id).toList(),
-      itemSummaries: outcome.bestMatch.items
-          .map((i) => '${i.category}: ${i.attributes!.toPromptLine()}')
-          .toList(),
-      colorScore: outcome.bestScore,
-      summaryText: outcome.summaryText,
-      triggerItemId: newItem.id,
-      createdAt: DateTime.now(),
-      evaluatedCount: outcome.evaluatedCount,
-      candidateScores: outcome.candidateScores,
-    );
-
-    debugPrint('[RECOMMEND] Firestore 저장 시도...');
-    // 성공/실패 로그는 addRecommendationSilently 내부에서 남긴다.
-    final recId = await FirestoreService.addRecommendationSilently(uid, entry);
-    if (recId == null) return; // 저장 실패 시 "등록했습니다" 로그를 남기지 않는다.
-
-    final scorePhrase = outcome.bestScore != null ? '${outcome.bestScore}점 조합을' : '조합을';
-    unawaited(FirestoreService.addAgentLogSilently(
-      uid,
-      AgentLogEntry(
-        id: '',
-        eventType: AgentLogEntry.typeRecommendationRegistered,
-        message: outcome.evaluatedCount > 1
-            ? '${outcome.evaluatedCount}개 조합을 비교 평가해 $scorePhrase 추천으로 등록했습니다'
-            : '옷장 분석으로 $scorePhrase 추천으로 등록했습니다',
-        relatedDocId: newItem.id,
-      ),
-    ));
-  } catch (e) {
-    debugPrint('[RECOMMEND] 파이프라인 예외로 중단: $e');
+    return;
   }
-}
-
-// 활동 로그 문장용 짧은 옷 설명 — "블랙 상의"처럼 색+카테고리.
-String _agentItemLabel(WardrobeItem item) {
-  final color = item.attributes?.color;
-  return (color != null && color.isNotEmpty) ? '$color ${item.category}' : item.category;
-}
-
-// 타임아웃/일시적 과부하 시 같은 모델로 재시도하는 대신 대체 모델로 바꿔
-// 한 번 더 시도한다(GeminiService.withTextModelFallback 공통 정책).
-Future<ClothingAttributes> _extractAttributesWithRetry(
-  String imageUrl,
-  String category,
-) {
-  return GeminiService.withTextModelFallback(
-    (model) => GeminiService.extractAttributes(
+  await FirestoreService.updateWardrobeAttributes(itemId, attributes);
+  // "능동 추천"은 속성이 준비된 직후에만 의미가 있고, 실패해도 옷 등록
+  // 자체를 막으면 안 되므로 별도의 조용한 백그라운드 작업으로 흘려보낸다.
+  if (uid == null) return;
+  final ok = await AgentPlanner.generateRecommendationForNewItem(
+    uid,
+    WardrobeItem(
+      id: itemId,
       imageUrl: imageUrl,
       category: category,
-      model: model,
+      createdAt: DateTime.now(),
+      attributes: attributes,
     ),
   );
+  if (!ok) {
+    unawaited(FirestoreService.enqueueAgentTaskSilently(
+      uid,
+      AgentTask.create(
+        type: AgentTask.typeGenerateRecommendation,
+        payload: {'itemId': itemId},
+        lastError: '추천 파이프라인 실패(자기 평가 루프가 Gemini 폴백까지 모두 실패했거나 저장 실패)',
+      ),
+    ));
+  }
 }
 
 // 사이즈표 OCR도 동일한 정책 적용. 그래도 실패하면 그대로 던져서 호출부가

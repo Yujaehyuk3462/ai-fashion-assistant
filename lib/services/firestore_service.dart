@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import '../models/agent_log_entry.dart';
+import '../models/agent_task.dart';
 import '../models/clothing_attributes.dart';
 import '../models/outfit_calendar_entry.dart';
 import '../models/clothing_size.dart';
@@ -61,6 +62,43 @@ class FirestoreService {
     await _db.collection(_wardrobeCol).doc(id).update({
       'size': size.toFirestore(),
     });
+  }
+
+  // AgentSweeper가 실패한 태스크를 재개할 때 옷 정보를 다시 읽어오는 용도.
+  // 그 사이 삭제됐을 수 있어 null을 반환할 수 있다.
+  static Future<WardrobeItem?> getWardrobeItemSilently(String id) async {
+    try {
+      final doc = await _db.collection(_wardrobeCol).doc(id).get();
+      if (!doc.exists) return null;
+      return WardrobeItem.fromFirestore(doc);
+    } catch (e) {
+      debugPrint('[TASK] 옷 조회 실패: $e');
+      return null;
+    }
+  }
+
+  // wardrobe는 전 사용자가 공유하는 컬렉션이라, AgentSweeper가 같은 아이템을
+  // 동시에(다른 기기/세션에서) 중복 재추출하지 않도록 시도 시각을 찍어
+  // 잠그는 용도. 트랜잭션 없이 read-then-write라 이론상 레이스 윈도우는
+  // 있지만, 이 앱의 다른 Firestore 접근도 동일한 수준의 단순함을 유지한다.
+  // 최근 10분 내 시도 기록이 있으면 false(스킵), 없으면 시각을 찍고 true.
+  static Future<bool> tryClaimExtractionAttemptSilently(String itemId) async {
+    try {
+      final doc = await _db.collection(_wardrobeCol).doc(itemId).get();
+      final attemptedAt = (doc.data()?['extractionAttemptedAt'] as Timestamp?)?.toDate();
+      if (attemptedAt != null &&
+          DateTime.now().difference(attemptedAt) < const Duration(minutes: 10)) {
+        return false;
+      }
+      await _db
+          .collection(_wardrobeCol)
+          .doc(itemId)
+          .update({'extractionAttemptedAt': FieldValue.serverTimestamp()});
+      return true;
+    } catch (e) {
+      debugPrint('[TASK] 추출 시도 클레임 실패: $e');
+      return false; // 판단 불가 시 안전하게 스킵(다음 스윕에서 재시도)
+    }
   }
 
   // TODO: 옷/사용자 사진이 삭제될 때 해당 아이템이 포함된 fitting_cache
@@ -316,6 +354,93 @@ class FirestoreService {
         .snapshots()
         .map((snapshot) =>
             snapshot.docs.map((doc) => AgentLogEntry.fromFirestore(doc)).toList());
+  }
+
+  // ── 에이전트 재시도 태스크 (상태 지속성 — 실패한 백그라운드 작업의 재개
+  // 지점, 본인만 접근 가능) ── status만 where로 걸고 nextRetryAt/정렬은
+  // 클라이언트에서 처리해 복합 인덱스가 필요 없다.
+  static const _agentTasksCol = 'agent_tasks';
+
+  // 같은 type+itemId의 pending 태스크가 이미 있으면 새로 만들지 않는다
+  // (파이프라인이 여러 경로로 재시도되며 중복 태스크를 쌓는 것을 방지).
+  static Future<void> enqueueAgentTaskSilently(String uid, AgentTask task) async {
+    try {
+      final itemId = task.itemId;
+      if (itemId != null) {
+        final existing = await _db
+            .collection(_usersCol)
+            .doc(uid)
+            .collection(_agentTasksCol)
+            .where('status', isEqualTo: AgentTask.statusPending)
+            .get();
+        final dup = existing.docs.any((d) {
+          final data = d.data();
+          return data['type'] == task.type &&
+              (data['payload'] as Map?)?['itemId'] == itemId;
+        });
+        if (dup) return;
+      }
+      await _db.collection(_usersCol).doc(uid).collection(_agentTasksCol).add(task.toFirestore());
+      debugPrint('[TASK] 재시도 태스크 등록: ${task.type}($itemId)');
+    } catch (e) {
+      debugPrint('[TASK] 태스크 등록 실패: $e');
+    }
+  }
+
+  // nextRetryAt <= now인 pending 태스크를 오래된 순(createdAt 오름차순)으로.
+  static Future<List<AgentTask>> duePendingAgentTasksSilently(String uid) async {
+    try {
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_agentTasksCol)
+          .where('status', isEqualTo: AgentTask.statusPending)
+          .get();
+      final now = DateTime.now();
+      final due = snapshot.docs
+          .map((d) => AgentTask.fromFirestore(d))
+          .where((t) => !t.nextRetryAt.isAfter(now))
+          .toList()
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      return due;
+    } catch (e) {
+      debugPrint('[TASK] 대기 태스크 조회 실패: $e');
+      return [];
+    }
+  }
+
+  static Future<void> markAgentTaskDoneSilently(String uid, String taskId) async {
+    try {
+      await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_agentTasksCol)
+          .doc(taskId)
+          .update({'status': AgentTask.statusDone});
+    } catch (e) {
+      debugPrint('[TASK] 완료 처리 실패: $e');
+    }
+  }
+
+  // 실패 시 지수 백오프로 재스케줄. retryCount가 maxRetries를 넘으면 gave_up.
+  static Future<void> rescheduleAgentTaskSilently(
+    String uid,
+    String taskId, {
+    required int retryCount,
+    required String error,
+  }) async {
+    try {
+      final gaveUp = retryCount > AgentTask.maxRetries;
+      await _db.collection(_usersCol).doc(uid).collection(_agentTasksCol).doc(taskId).update({
+        'retryCount': retryCount,
+        'nextRetryAt':
+            Timestamp.fromDate(DateTime.now().add(Duration(minutes: 1 << retryCount))),
+        'lastError': error,
+        if (gaveUp) 'status': AgentTask.statusGaveUp,
+      });
+    } catch (e) {
+      debugPrint('[TASK] 재스케줄 실패: $e');
+    }
   }
 
   // ── 착장 캘린더 (OOTD 기록, 본인만 접근 가능) ──

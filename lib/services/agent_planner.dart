@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../constants/tpo_tags.dart';
 import '../models/agent_log_entry.dart';
+import '../models/clothing_attributes.dart';
 import '../models/outfit_calendar_entry.dart';
 import '../models/recommendation_entry.dart';
 import '../models/wardrobe_item.dart';
+import 'agent_activity.dart';
 import 'firestore_service.dart';
 import 'gemini_service.dart';
 import 'outfit_matcher.dart';
@@ -33,6 +35,10 @@ class WeeklyPlanDay {
 class AgentPlanner {
   static const _proactiveHorizonDays = 3; // 오늘~+3일 예정을 선제 추천 대상으로
   static const _weeklyHorizonDays = 7;
+  // 일정이 여러 건이면 각 건의 자기 평가 루프가 연달아 Gemini를 부르게 되므로,
+  // 앱 실행 직후 호출이 한꺼번에 몰리지 않도록 건 사이에 텀을 둔다
+  // (AgentSweeper의 태스크 간 딜레이와 동일한 취지).
+  static const _planStepDelay = Duration(seconds: 3);
 
   static DateTime _todayMidnight() {
     final now = DateTime.now();
@@ -56,13 +62,17 @@ class AgentPlanner {
       final usable = wardrobe.where((i) => i.attributes != null).toList();
       if (usable.length < 2) return;
 
-      for (final plan in planned) {
+      for (var i = 0; i < planned.length; i++) {
+        final plan = planned[i];
         // 이미 이 날짜용 추천이 있으면 스킵(중복 방지).
         if (await FirestoreService.hasRecommendationForDateSilently(uid, plan.date)) {
           debugPrint('[PLAN] ${_dateLabel(plan.date)} 추천 이미 존재 — 스킵');
           continue;
         }
         await _prepareRecommendationFor(uid, plan, usable);
+        if (i < planned.length - 1) {
+          await Future.delayed(_planStepDelay);
+        }
       }
     } catch (e) {
       debugPrint('[PLAN] 선제 추천 체크 예외로 중단: $e');
@@ -401,6 +411,161 @@ class AgentPlanner {
       debugPrint('[PLAN] JSON 파싱 실패: $e');
       return const [];
     }
+  }
+
+  // ── 새 옷 등록 추천 파이프라인 (wardrobe_screen.dart의 최초 트리거와
+  // AgentSweeper의 재개 양쪽이 공유) ──────────────────────
+  // 순수 파이프라인 함수 — 태스크 enqueue는 호출부 책임이다(최초 트리거와
+  // 재개 트리거가 "새 태스크 생성"과 "기존 태스크 재스케줄"을 다르게
+  // 처리해야 하므로 이 함수 안에 숨기지 않는다).
+
+  // 타임아웃/일시적 과부하 시 같은 모델로 재시도하는 대신 대체 모델로 바꿔
+  // 한 번 더 시도한다(GeminiService.withTextModelFallback 공통 정책).
+  static Future<ClothingAttributes> extractAttributesWithRetry(
+    String imageUrl,
+    String category,
+  ) {
+    return GeminiService.withTextModelFallback(
+      (model) => GeminiService.extractAttributes(
+        imageUrl: imageUrl,
+        category: category,
+        model: model,
+      ),
+    );
+  }
+
+  // 새 옷 등록(또는 재개)을 계기로 로컬 매칭(후보 최대 3개) → 자기 평가
+  // 루프 → 저장까지. 반환값은 "재시도가 필요한 실패"였는지만 알려준다
+  // (candidates.isEmpty처럼 옷장이 부족해 애초에 추천할 게 없는 경우는
+  // 실패가 아니므로 true — 재시도해도 달라지지 않는다).
+  static Future<bool> generateRecommendationForNewItem(
+    String uid,
+    WardrobeItem newItem,
+  ) async {
+    debugPrint('[RECOMMEND] 파이프라인 시작: 새 옷 id=${newItem.id}, category=${newItem.category}');
+    // 홈 화면 "에이전트 작업 중" 인디케이터 — 성공/실패 상관없이 끝나면
+    // 반드시 유휴로 되돌려야 하므로 finally에서 초기화한다.
+    AgentActivity.current.value = '새 옷 코디를 검토 중...';
+    try {
+      final itemLabel = _agentItemLabel(newItem);
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeNewItemDetected,
+          message: '새 옷($itemLabel) 등록을 감지했습니다',
+          relatedDocId: newItem.id,
+        ),
+      ));
+
+      final existingItems = await FirestoreService.wardrobeStream().first;
+      final candidates = OutfitMatcher.findCandidateMatches(
+        newItem: newItem,
+        existingItems: existingItems,
+      );
+      if (candidates.isEmpty) return true; // 매칭 불가 — 재시도 대상 아님
+
+      final comparedCount = existingItems.where((i) => i.id != newItem.id).length;
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeCandidatesGenerated,
+          message: '옷장 $comparedCount벌과 대조해 후보 ${candidates.length}개 조합을 생성했습니다',
+          relatedDocId: newItem.id,
+        ),
+      ));
+
+      final outcome = await OutfitSelfEvaluator.run(
+        candidates,
+        // 진단-수리 루프는 이 백그라운드 파이프라인에서만 켠다(동기 흐름인
+        // AI 코디 분석하기/주간 플랜은 켜지 않아 기존과 동일하게 1회 평가).
+        enableRepair: true,
+        anchorItem: newItem,
+        wardrobe: existingItems,
+        onStep: ({required index, required total, score, required passed, required wasError}) {
+          final String message;
+          if (wasError) {
+            message = '후보 ${index + 1} 평가: Gemini 호출 실패로 건너뛰고 다음 후보 검토';
+          } else {
+            final scoreText = score != null ? '$score점' : '점수 파싱 실패';
+            final verdict = passed
+                ? '기준(${OutfitSelfEvaluator.threshold}점) 통과, 채택'
+                : (index < total - 1 ? '기준 미달로 다음 후보 검토' : '기준 미달');
+            message = '후보 ${index + 1} 평가: $scoreText — $verdict';
+          }
+          unawaited(FirestoreService.addAgentLogSilently(
+            uid,
+            AgentLogEntry(
+              id: '',
+              eventType: AgentLogEntry.typeCandidateEvaluated,
+              message: message,
+              relatedDocId: newItem.id,
+            ),
+          ));
+        },
+        // 진단-수리 서사("후보 N 평가 중...", 진단, 교체, 수리 결과)는
+        // 일어나는 순간마다 바로 activity 인디케이터 + 활동 로그에 반영한다.
+        onNarrative: (message) {
+          AgentActivity.current.value = message;
+          unawaited(FirestoreService.addAgentLogSilently(
+            uid,
+            AgentLogEntry(
+              id: '',
+              eventType: AgentLogEntry.typeCandidateEvaluated,
+              message: message,
+              relatedDocId: newItem.id,
+            ),
+          ));
+        },
+      );
+      if (outcome == null) return false; // Gemini 평가가 폴백까지 전부 실패
+
+      final entry = RecommendationEntry(
+        id: '',
+        itemIds: outcome.bestMatch.items.map((i) => i.id).toList(),
+        itemSummaries: outcome.bestMatch.items
+            .map((i) => '${i.category}: ${i.attributes!.toPromptLine()}')
+            .toList(),
+        colorScore: outcome.bestScore,
+        summaryText: outcome.summaryText,
+        triggerItemId: newItem.id,
+        createdAt: DateTime.now(),
+        evaluatedCount: outcome.evaluatedCount,
+        candidateScores: outcome.candidateScores,
+        repairAttempted: outcome.repairAttempted,
+        repairNote: outcome.repairNote,
+      );
+
+      debugPrint('[RECOMMEND] Firestore 저장 시도...');
+      final recId = await FirestoreService.addRecommendationSilently(uid, entry);
+      if (recId == null) return false; // 저장 실패 시 "등록했습니다" 로그를 남기지 않는다.
+
+      final scorePhrase = outcome.bestScore != null ? '${outcome.bestScore}점 조합을' : '조합을';
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeRecommendationRegistered,
+          message: outcome.evaluatedCount > 1
+              ? '${outcome.evaluatedCount}개 조합을 비교 평가해 $scorePhrase 추천으로 등록했습니다'
+              : '옷장 분석으로 $scorePhrase 추천으로 등록했습니다',
+          relatedDocId: newItem.id,
+        ),
+      ));
+      return true;
+    } catch (e) {
+      debugPrint('[RECOMMEND] 파이프라인 예외로 중단: $e');
+      return false;
+    } finally {
+      AgentActivity.current.value = null;
+    }
+  }
+
+  // 활동 로그 문장용 짧은 옷 설명 — "블랙 상의"처럼 색+카테고리.
+  static String _agentItemLabel(WardrobeItem item) {
+    final color = item.attributes?.color;
+    return (color != null && color.isNotEmpty) ? '$color ${item.category}' : item.category;
   }
 
   static String _dateKey(DateTime d) =>

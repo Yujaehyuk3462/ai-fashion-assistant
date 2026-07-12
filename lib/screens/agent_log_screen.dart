@@ -116,6 +116,8 @@ IconData _iconFor(String eventType) {
       return Icons.style_outlined;
     case AgentLogEntry.typeCalendarLogged:
       return Icons.event_available_outlined;
+    case AgentLogEntry.typeTaskRecovered:
+      return Icons.replay_outlined;
     default:
       return Icons.smart_toy_outlined;
   }

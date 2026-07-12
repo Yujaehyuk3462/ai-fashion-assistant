@@ -16,6 +16,7 @@ class AgentLogEntry {
   static const typeCalendarLogged = 'calendar_logged';
   static const typeScheduleDetected = 'schedule_detected'; // 다가오는 일정 감지(선제 추천)
   static const typeWeeklyPlanned = 'weekly_planned'; // 주간 코디 플랜 수립
+  static const typeTaskRecovered = 'task_recovered'; // 실패했던 작업을 재발견/재개/보류(상태 지속성)
 
   final String id;
   final DateTime? createdAt; // 읽을 때만 채워짐(쓸 때는 서버 타임스탬프 사용)
