@@ -8,12 +8,12 @@ import '../models/outfit_history_entry.dart';
 import '../models/wardrobe_item.dart';
 import '../services/firestore_service.dart';
 
-// 보드에 배치되는 슬롯 정의. key는 화면 내부 상태 식별자, category는
-// wardrobeStream을 필터링할 때 쓰는 실제 등록 카테고리 — 모자/가방/시계는
-// 전부 "액세서리" 카테고리 안에서 subCategory로 구분해서 고른다(등록
-// 카테고리 자체를 3개로 쪼갤 필요는 없다). subCategory가 null인 슬롯은
-// 해당 카테고리 전체에서 고르면 된다는 뜻.
-const _boardSlots = [
+// 보드에 배치되는 슬롯 정의. key는 화면 내부 상태 식별자(및 selectedItems의
+// 키)로 쓰이고, category는 wardrobeStream을 필터링할 때 쓰는 실제 등록
+// 카테고리 — 모자/가방/시계/팔찌는 전부 "액세서리" 카테고리 안에서
+// subCategory로 구분해서 고른다. subCategory가 null인 슬롯은 해당
+// 카테고리 전체에서 고르면 된다는 뜻.
+const outfitBoardSlots = [
   (key: '아우터', label: '아우터', category: '아우터', subCategory: null),
   (key: '상의', label: '상의', category: '상의', subCategory: null),
   (key: '하의', label: '하의', category: '하의', subCategory: null),
@@ -35,7 +35,7 @@ class _BoardLayout {
   // 상의 (아우터 없을 때 — 보드 상단 중앙). 박스 높이를 넉넉히 줘야
   // BoxFit.contain으로 렌더링될 때 실제 이미지가 목표 폭(55~60%)까지
   // 커질 여유가 생긴다 — 높이가 좁으면 세로로 긴 사진일수록 폭이
-  // 의도보다 훨씬 작게 그려진다. (레퍼런스 대비 이미 적정 수준 — 유지)
+  // 의도보다 훨씬 작게 그려진다.
   static const double topLeft = 0.19;
   static const double topTop = 0.19;
   static const double topWidth = 0.55;
@@ -55,15 +55,14 @@ class _BoardLayout {
 
   // 하의 — 상의 밑단과 15~20%가량 겹치도록 top을 당겨서 배치.
   // 겹침이 실제로 보이려면 상의는 박스 하단에, 하의는 박스 상단에
-  // 붙여 그려야 한다(각 슬롯의 alignment 참고). (유지)
+  // 붙여 그려야 한다(각 슬롯의 alignment 참고).
   static const double bottomLeft = 0.205;
   static const double bottomTop = 0.48;
   static const double bottomWidth = 0.52;
   static const double bottomHeight = 0.42;
   static const double bottomRotationDeg = 0.0;
 
-  // 신발 — 하의 밑단과 살짝 겹치도록 오른쪽 아래에 배치, 시계방향으로 기울여
-  // 캐주얼하게 벗어둔 느낌을 낸다.
+  // 신발 — 하의 밑단과 살짝 겹치도록 오른쪽 아래에 배치.
   static const double shoesLeft = 0.51;
   static const double shoesTop = 0.76;
   static const double shoesWidth = 0.44;
@@ -106,26 +105,28 @@ class SlotTransform {
   final double scale;
 
   const SlotTransform({required this.left, required this.top, this.scale = 1.0});
-
-  SlotTransform copyWith({double? left, double? top, double? scale}) => SlotTransform(
-        left: left ?? this.left,
-        top: top ?? this.top,
-        scale: scale ?? this.scale,
-      );
 }
 
-class CoordBoardScreen extends StatefulWidget {
-  const CoordBoardScreen({super.key});
+// 코디보드 모양의 플랫레이 옷 선택 위젯. 탭하면 슬롯별 옷장 아이템 선택
+// 시트가 뜨고, 편집 모드에서는 드래그로 이동·두 손가락으로 크기 조절이
+// 가능하다. AI 피팅룸의 "코디 선택" 단계에 임베드해서 쓴다.
+class OutfitBoard extends StatefulWidget {
+  final Map<String, WardrobeItem?> slots;
+  final void Function(String slotKey, WardrobeItem item) onSetItem;
+  final ValueChanged<String>? onClearItem;
+
+  const OutfitBoard({
+    super.key,
+    required this.slots,
+    required this.onSetItem,
+    this.onClearItem,
+  });
 
   @override
-  State<CoordBoardScreen> createState() => _CoordBoardScreenState();
+  State<OutfitBoard> createState() => _OutfitBoardState();
 }
 
-class _CoordBoardScreenState extends State<CoordBoardScreen> {
-  final Map<String, WardrobeItem?> _slots = {
-    for (final s in _boardSlots) s.key: null,
-  };
-
+class _OutfitBoardState extends State<OutfitBoard> {
   // slotKey가 이 맵에 없으면 _buildSlot에 전달된 기본 left/top/scale(1.0)을
   // 그대로 쓴다. 드래그/핀치로 편집한 슬롯만 여기 들어간다.
   final Map<String, SlotTransform> _transforms = {};
@@ -139,18 +140,6 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   // 마지막으로 이력에 기록한 조합의 서명(정렬된 옷 id 조합) — 편집 완료를
   // 여러 번 눌러도 같은 조합이면 중복 기록하지 않기 위한 용도.
   String? _lastLoggedBoardSignature;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadTransforms();
-  }
-
-  // TODO(firestore): 코디보드 배치를 저장/복원하려면 이 두 메서드만 채우면 된다.
-  // 지금은 앱을 새로 열면 편집한 위치/크기가 초기화된다.
-  Future<void> _loadTransforms() async {}
-
-  Future<void> _saveTransforms() async {}
 
   void _handleSlotGestureStart(String slotKey) {
     _gestureStartScale[slotKey] = (_transforms[slotKey] ?? const SlotTransform(left: 0, top: 0)).scale;
@@ -184,7 +173,6 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
 
   void _handleSlotGestureEnd(String slotKey) {
     _gestureStartScale.remove(slotKey);
-    _saveTransforms();
   }
 
   // 편집 모드를 끄는 순간(= "완료" 탭)을 "이 조합이 마음에 들어 저장했다"는
@@ -198,7 +186,7 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   }
 
   void _logBoardHistorySilently() {
-    final items = _slots.values.whereType<WardrobeItem>().toList();
+    final items = widget.slots.values.whereType<WardrobeItem>().toList();
     if (items.length < 2) return;
 
     final signature = (items.map((i) => i.id).toList()..sort()).join(',');
@@ -218,7 +206,7 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   }
 
   void _pickForSlot(String slotKey) {
-    final slot = _boardSlots.firstWhere((s) => s.key == slotKey);
+    final slot = outfitBoardSlots.firstWhere((s) => s.key == slotKey);
     showModalBottomSheet<WardrobeItem>(
       context: context,
       isScrollControlled: true,
@@ -230,7 +218,7 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
       ),
     ).then((selected) {
       if (selected != null && mounted) {
-        setState(() => _slots[slotKey] = selected);
+        widget.onSetItem(slotKey, selected);
       }
     });
   }
@@ -238,61 +226,37 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
   @override
   Widget build(BuildContext context) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildHeader(),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: _buildBoard(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(bottom: BorderSide(color: AppColors.border)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.dashboard_customize_outlined, color: AppColors.navy, size: 22),
-              const SizedBox(width: 8),
-              const Text('코디 보드',
-                  style: TextStyle(
-                      color: AppColors.textPrimary, fontSize: 22, fontWeight: FontWeight.w800)),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: _toggleEditMode,
-                style: TextButton.styleFrom(
-                  foregroundColor: _editMode ? AppColors.blue : AppColors.textMuted,
-                ),
-                icon: Icon(_editMode ? Icons.check : Icons.edit_outlined, size: 18),
-                label: Text(_editMode ? '완료' : '편집',
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _editMode ? '드래그로 이동 · 두 손가락으로 크기 조절' : '슬롯을 탭해 옷장에서 바로 선택하세요',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
               ),
-            ],
-          ),
-          if (_editMode)
-            const Padding(
-              padding: EdgeInsets.only(top: 4),
-              child: Text('드래그로 이동 · 두 손가락으로 크기 조절',
-                  style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
             ),
-        ],
-      ),
+            TextButton.icon(
+              onPressed: _toggleEditMode,
+              style: TextButton.styleFrom(
+                foregroundColor: _editMode ? AppColors.blue : AppColors.textMuted,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              icon: Icon(_editMode ? Icons.check : Icons.edit_outlined, size: 16),
+              label: Text(_editMode ? '완료' : '편집',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        _buildBoard(),
+      ],
     );
   }
 
   // ── 보드 본체: Stack + Positioned로 플랫레이 배치 ─────────
   Widget _buildBoard() {
-    final hasOuter = _slots['아우터'] != null;
+    final hasOuter = widget.slots['아우터'] != null;
 
     return AspectRatio(
       aspectRatio: _BoardLayout.aspectRatio,
@@ -323,8 +287,6 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
                 ),
                 // 상의 — 아우터가 있으면 오른쪽으로 밀려 아우터 뒤에 걸친다.
                 // 박스 하단에 붙여 그려서 하의와 겹치는 부분이 실제로 보이게 한다.
-                // (편집으로 위치를 직접 옮긴 뒤에는 이 자동 스위칭 대신 사용자가
-                // 정한 위치가 우선한다 — _transforms에 값이 들어가기 때문.)
                 _buildSlot(
                   slotKey: '상의',
                   defaultLeft: hasOuter ? _BoardLayout.topWithOuterLeft : _BoardLayout.topLeft,
@@ -425,7 +387,7 @@ class _CoordBoardScreenState extends State<CoordBoardScreen> {
     final width = boardWidth * defaultWidth * transform.scale;
     final height = boardHeight * defaultHeight * transform.scale;
 
-    final item = _slots[slotKey];
+    final item = widget.slots[slotKey];
     Widget content = SizedBox(
       width: width,
       height: height,
@@ -596,7 +558,7 @@ class _BoardItemPickerSheet extends StatelessWidget {
                     return const Center(
                         child: CircularProgressIndicator(color: AppColors.navy, strokeWidth: 2));
                   }
-                  // subCategory가 지정된 슬롯(모자/가방/시계)이면 해당 타입과
+                  // subCategory가 지정된 슬롯(모자/가방/시계/팔찌)이면 해당 타입과
                   // 정확히 일치하거나, 아직 세부 분류가 없는(null) 레거시
                   // 아이템까지 폴백으로 포함한다 — 등록 당시 미분류였다고
                   // 특정 슬롯에서 영영 안 보이면 안 되니까.

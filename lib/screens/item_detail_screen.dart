@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+// import 'package:cached_network_image/cached_network_image.dart'; // 최저가 비교(_buildHeroPrice) 주석 처리로 미사용
 import '../constants/app_colors.dart';
-import '../data/item_detail_data.dart';
+import '../data/item_detail_data.dart'; // materialInfo/careInstructions/stitchChecklist는 계속 사용
 
-final _maxPrice = priceData.map((d) => d.price).reduce((a, b) => a > b ? a : b);
+// 최저가 비교 기능 주석 처리(추후 구현 시 복원 예정).
+// final _maxPrice = priceData.map((d) => d.price).reduce((a, b) => a > b ? a : b);
 
 class ItemDetailScreen extends StatelessWidget {
   final VoidCallback onBack;
@@ -23,14 +24,15 @@ class ItemDetailScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 16),
-                  _buildHeroPrice(),
-                  const SizedBox(height: 20),
-                  _buildSection(
-                    title: '가격 비교',
-                    child: _buildPriceComparison(),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildBuyButton(),
+                  // 최저가 비교 기능 주석 처리(추후 구현 시 복원 예정).
+                  // _buildHeroPrice(),
+                  // const SizedBox(height: 20),
+                  // _buildSection(
+                  //   title: '가격 비교',
+                  //   child: _buildPriceComparison(),
+                  // ),
+                  // const SizedBox(height: 16),
+                  // _buildBuyButton(),
                   const SizedBox(height: 20),
                   _buildSection(
                     title: '소재 정보',
@@ -87,6 +89,8 @@ class ItemDetailScreen extends StatelessWidget {
     );
   }
 
+  // 최저가 비교 기능 주석 처리(추후 구현 시 복원 예정).
+  /*
   Widget _buildHeroPrice() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -142,6 +146,7 @@ class ItemDetailScreen extends StatelessWidget {
       ),
     );
   }
+  */
 
   Widget _buildSection({required String title, required Widget child}) {
     return Padding(
@@ -157,6 +162,8 @@ class ItemDetailScreen extends StatelessWidget {
     );
   }
 
+  // 최저가 비교 기능 주석 처리(추후 구현 시 복원 예정).
+  /*
   Widget _buildPriceComparison() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -243,6 +250,7 @@ class ItemDetailScreen extends StatelessWidget {
       ),
     );
   }
+  */
 
   Widget _buildMaterialInfo() {
     return Container(

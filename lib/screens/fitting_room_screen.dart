@@ -15,6 +15,7 @@ import '../services/fitting_job_controller.dart';
 import '../services/fitting_progress.dart';
 import '../services/outfit_matcher.dart';
 import '../widgets/full_screen_image_viewer.dart';
+import '../widgets/outfit_board.dart';
 
 class FittingRoomScreen extends StatefulWidget {
   final FittingJobController jobController;
@@ -24,7 +25,6 @@ class FittingRoomScreen extends StatefulWidget {
   final ValueChanged<String> onClearItem;
   final ValueChanged<WardrobeItem> onSetUserPhoto;
   final VoidCallback? onClearUserPhoto;       // 내 사진 초기화 (main.dart 연동 필요)
-  final VoidCallback onNavigateToDetail;
 
   const FittingRoomScreen({
     super.key,
@@ -35,7 +35,6 @@ class FittingRoomScreen extends StatefulWidget {
     required this.onClearItem,
     required this.onSetUserPhoto,
     this.onClearUserPhoto,
-    required this.onNavigateToDetail,
   });
 
   @override
@@ -202,7 +201,62 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   }
 
   String _stripScoreLine(String text) {
-    return text.replaceFirst(RegExp(r'\[점수\]\s*\d+\n?'), '').trim();
+    return text
+        .replaceFirst(RegExp(r'\[점수\]\s*\d+\n?'), '')
+        .replaceFirst(RegExp(r'\[분위기점수\]\s*\d+\n?'), '')
+        .replaceFirst(RegExp(r'\[분위기\][^\n]*\n?'), '')
+        .trim();
+  }
+
+  // ── 코디 분위기 점수/라벨 파싱 헬퍼 ─────────────────────
+  int? _parseMoodScore(String text) {
+    final match = RegExp(r'\[분위기점수\]\s*(\d+)').firstMatch(text);
+    if (match == null) return null;
+    final score = int.tryParse(match.group(1) ?? '');
+    if (score == null) return null;
+    return score.clamp(1, 100);
+  }
+
+  String? _parseMood(String text) {
+    final match = RegExp(r'\[분위기\]\s*([^\n]+)').firstMatch(text);
+    return match?.group(1)?.trim();
+  }
+
+  // 분위기 단어별 고정 색상 — 프롬프트가 요청하는 8개 분위기 중 하나를
+  // 그대로 매핑한다. 모델이 목록 밖 단어를 내놓는 예외 상황에서만 blue로 폴백.
+  Color _moodColor(String mood) {
+    switch (mood.trim()) {
+      case '캐주얼':
+        return AppColors.amber;
+      case '포멀':
+        return AppColors.navy;
+      case '스트리트':
+        return const Color(0xFF1F2937);
+      case '미니멀':
+        return AppColors.textMuted;
+      case '러블리':
+        return const Color(0xFFEC4899);
+      case '스포티':
+        return AppColors.greenDark;
+      case '빈티지':
+        return const Color(0xFF92400E);
+      case '시크':
+        return AppColors.purple;
+      default:
+        return AppColors.blue;
+    }
+  }
+
+  // "N. 다른 색상 추천: ..." 구간만 40자로 잘라낸다 — 프롬프트로 길이를
+  // 요청해도 모델이 넘길 수 있어 화면 표시 직전에 한 번 더 강제한다.
+  String _capOtherColorRecommendation(String text) {
+    final regex = RegExp(r'(\d+\.\s*다른\s*색상\s*추천\s*:\s*)([^\n]*)');
+    return text.replaceFirstMapped(regex, (m) {
+      final prefix = m.group(1) ?? '';
+      final content = (m.group(2) ?? '').trim();
+      final capped = content.length > 40 ? '${content.substring(0, 40)}...' : content;
+      return '$prefix$capped';
+    });
   }
 
   Color _scoreColor(int score) {
@@ -356,23 +410,6 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
-  void _showClothingPicker(String category) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _WardrobePickerSheet(
-        category: category,
-        title: '$category 선택',
-        emptyMessage: '등록된 $category 아이템이 없습니다.\n옷장 탭에서 먼저 추가해 주세요.',
-        onSelect: (item) {
-          Navigator.pop(context);
-          widget.onSetItem(category, item);
-        },
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     // 결과 영역은 항상 인라인 그대로다(원래 동작, 손대지 않음) — 로딩 중엔
@@ -401,8 +438,12 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     _buildStepCard(
                       number: '2',
                       title: '코디 선택',
-                      subtitle: '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
-                      child: _buildClothingSection(),
+                      subtitle: '코디보드에서 슬롯을 탭해 옷장 아이템을 배치하세요',
+                      child: OutfitBoard(
+                        slots: widget.selectedItems,
+                        onSetItem: widget.onSetItem,
+                        onClearItem: widget.onClearItem,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     _buildFitPreview(),
@@ -646,149 +687,15 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
     );
   }
 
-  // ── Step 2: 의류 슬롯 3개 ───────────────────────────────
-  Widget _buildClothingSection() {
-    const slotCategories = ['상의', '하의', '아우터'];
-    const categoryIcons = {
-      '상의': Icons.checkroom_outlined,
-      '하의': Icons.straighten,
-      '아우터': Icons.layers_outlined,
-    };
-    final selectedCount = widget.selectedItems.values.where((v) => v != null).length;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: slotCategories.asMap().entries.map((entry) {
-            final i = entry.key;
-            final category = entry.value;
-            return Expanded(
-              child: Padding(
-                padding: EdgeInsets.only(right: i < 2 ? 10 : 0),
-                child: _buildClothingSlot(
-                  category: category,
-                  icon: categoryIcons[category]!,
-                  item: widget.selectedItems[category],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            const Icon(Icons.touch_app_outlined,
-                color: AppColors.textDisabled, size: 13),
-            const SizedBox(width: 5),
-            Text(
-              selectedCount > 0
-                  ? '$selectedCount개 선택됨 — 빈 슬롯을 탭해 추가할 수 있습니다'
-                  : '슬롯을 탭하면 옷장에서 바로 선택할 수 있습니다',
-              style: const TextStyle(color: AppColors.textDisabled, fontSize: 11),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildClothingSlot({
-    required String category,
-    required IconData icon,
-    required WardrobeItem? item,
-  }) {
-    final isFilled = item != null;
-    return GestureDetector(
-      onTap: isFilled ? null : () => _showClothingPicker(category),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            category,
-            style: TextStyle(
-              color: isFilled ? AppColors.navy : AppColors.textMuted,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          AspectRatio(
-            aspectRatio: 0.85,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: isFilled
-                      ? CachedNetworkImage(
-                          // 드래그 조합 슬롯에서는 배경 제거본이 있으면 우선 사용 —
-                          // 실제 합성/분석 호출(fitting_job_controller)은 항상 원본을 쓴다.
-                          imageUrl: item.cutoutImageUrl ?? item.imageUrl,
-                          fit: BoxFit.cover,
-                          placeholder: (_, __) => Container(color: AppColors.background),
-                          errorWidget: (_, __, ___) => Container(
-                              color: AppColors.background,
-                              child: Icon(icon, color: AppColors.textDisabled)),
-                        )
-                      : Container(
-                          color: AppColors.background,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(icon, color: AppColors.textDisabled, size: 24),
-                              const SizedBox(height: 6),
-                              const Text('탭해서\n선택',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                      color: AppColors.textPlaceholder,
-                                      fontSize: 10,
-                                      height: 1.4)),
-                            ],
-                          ),
-                        ),
-                ),
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: isFilled
-                          ? AppColors.navy.withValues(alpha: 0.35)
-                          : AppColors.border,
-                      width: isFilled ? 2.0 : 1.5,
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                if (isFilled)
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: GestureDetector(
-                      onTap: () => widget.onClearItem(category),
-                      child: Container(
-                        width: 22,
-                        height: 22,
-                        decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.6),
-                            shape: BoxShape.circle),
-                        child: const Icon(Icons.close, color: Colors.white, size: 13),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   // ── 예상 핏 (규칙 기반, 숫자 비교만 — Gemini 호출 없음) ──
   // 옷 치수와 체형 프로필을 대조한 결과일 뿐이므로 선택된 아이템이
   // 바뀌는 즉시(코디 분석 버튼을 누르기 전에도) 바로 반영된다.
+  // FitPredictor가 예측을 지원하는 상의/하의/아우터만 보여준다 —
+  // 그 외 슬롯(신발/액세서리)은 항상 "예측 불가"만 뜨므로 제외.
   Widget _buildFitPreview() {
+    const predictableCategories = {'상의', '하의', '아우터'};
     final entries = widget.selectedItems.entries
+        .where((e) => predictableCategories.contains(e.key))
         .where((e) => e.value != null)
         .map((e) => (category: e.key, item: e.value!))
         .toList();
@@ -1357,7 +1264,83 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       ),
                     );
                   }),
-                  Text(_stripScoreLine(analysisResult),
+                  // ── 코디 분위기 점수 배지 ──────────────────────────
+                  // 컬러 조합 점수와 같은 모양이되, 배경/강조색은 분위기
+                  // 단어(_moodColor)로 정해 한눈에 다른 축임을 구분한다.
+                  Builder(builder: (context) {
+                    final moodScore = _parseMoodScore(analysisResult);
+                    final mood = _parseMood(analysisResult);
+                    if (moodScore == null || mood == null || mood.isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    final color = _moodColor(mood);
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.07),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: color.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 56,
+                            height: 56,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                CircularProgressIndicator(
+                                  value: moodScore / 100,
+                                  strokeWidth: 5,
+                                  backgroundColor: color.withValues(alpha: 0.15),
+                                  valueColor: AlwaysStoppedAnimation<Color>(color),
+                                ),
+                                Center(
+                                  child: Text(
+                                    '$moodScore',
+                                    style: TextStyle(
+                                      color: color,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('코디 분위기',
+                                    style: TextStyle(
+                                        color: AppColors.textMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  mood,
+                                  style: TextStyle(
+                                      color: color,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 2),
+                                Text('$moodScore / 100점',
+                                    style: TextStyle(
+                                        color: color.withValues(alpha: 0.75),
+                                        fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  Text(_capOtherColorRecommendation(_stripScoreLine(analysisResult)),
                       style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 14,
@@ -1381,59 +1364,28 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                     ),
                   ],
                   const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: GestureDetector(
-                          onTap: _analyze,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            decoration: BoxDecoration(
-                                color: AppColors.background,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: AppColors.border)),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.refresh,
-                                    color: AppColors.textMuted, size: 15),
-                                SizedBox(width: 6),
-                                Text('다시 분석',
-                                    style: TextStyle(
-                                        color: AppColors.textMuted,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                          ),
-                        ),
+                  GestureDetector(
+                    onTap: _analyze,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                          color: AppColors.background,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppColors.border)),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.refresh,
+                              color: AppColors.textMuted, size: 15),
+                          SizedBox(width: 6),
+                          Text('다시 분석',
+                              style: TextStyle(
+                                  color: AppColors.textMuted,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                        ],
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: GestureDetector(
-                          onTap: widget.onNavigateToDetail,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            decoration: BoxDecoration(
-                                color: AppColors.navy,
-                                borderRadius: BorderRadius.circular(8)),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.open_in_new,
-                                    color: Colors.white, size: 15),
-                                SizedBox(width: 6),
-                                Text('아이템 상세',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                   ],
                 ],

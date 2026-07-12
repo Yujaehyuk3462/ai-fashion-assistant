@@ -12,9 +12,7 @@ import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'screens/fitting_room_screen.dart';
-import 'screens/coord_board_screen.dart';
 import 'screens/calendar_screen.dart';
-import 'screens/item_detail_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/agent_planner.dart';
 import 'services/agent_sweeper.dart';
@@ -93,13 +91,17 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _tabIndex = 0;
-  bool _showItemDetail = false;
 
-  // ── 피팅룸 아이템 상태 ──────────────────────────────────
+  // ── 피팅룸 아이템 상태(코디보드 슬롯 8개) ─────────────────
   final Map<String, WardrobeItem?> _fittingItems = {
+    '아우터': null,
     '상의': null,
     '하의': null,
-    '아우터': null,
+    '신발': null,
+    '모자': null,
+    '가방': null,
+    '시계': null,
+    '팔찌': null,
   };
   WardrobeItem? _fittingUserPhoto; // 전신 사진
 
@@ -130,22 +132,32 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
+  // 액세서리는 등록 카테고리가 전부 "액세서리"라 subCategory(모자/가방/시계/팔찌)로
+  // 코디보드 슬롯 키를 가려낸다. 그 외 카테고리는 카테고리명이 곧 슬롯 키.
+  String? _boardSlotKeyFor(WardrobeItem item) {
+    if (item.category == '액세서리') return item.subCategory;
+    return item.category;
+  }
+
   // 옷장 탭에서 선택 → 피팅룸 이동
   void _sendToFittingRoom(WardrobeItem item) {
+    final slotKey = _boardSlotKeyFor(item);
+    if (slotKey == null) return;
     setState(() {
-      _fittingItems[item.category] = item;
+      _fittingItems[slotKey] = item;
       _tabIndex = 2;
     });
   }
 
-  // 홈 화면의 추천 코디 카드 탭 → 조합에 포함된 아이템들을 피팅룸 슬롯에
-  // 한 번에 채우고 이동. 피팅룸은 상의/하의/아우터 슬롯만 가지므로 그 외
-  // 카테고리(예: 신발)는 자연스럽게 무시된다.
+  // 홈 화면의 추천 코디 카드 탭 → 조합에 포함된 아이템들을 피팅룸 코디보드
+  // 슬롯에 한 번에 채우고 이동. 코디보드 슬롯에 없는 카테고리는 자연스럽게
+  // 무시된다.
   void _sendRecommendationToFittingRoom(List<WardrobeItem> items) {
     setState(() {
       for (final item in items) {
-        if (_fittingItems.containsKey(item.category)) {
-          _fittingItems[item.category] = item;
+        final slotKey = _boardSlotKeyFor(item);
+        if (slotKey != null && _fittingItems.containsKey(slotKey)) {
+          _fittingItems[slotKey] = item;
         }
       }
       _tabIndex = 2;
@@ -172,20 +184,12 @@ class _AppShellState extends State<AppShell> {
     setState(() => _fittingUserPhoto = null);
   }
 
-  void _navigateToDetail() => setState(() {
-        _showItemDetail = true;
-        _tabIndex = 2;
-      });
-
-  void _backFromDetail() => setState(() => _showItemDetail = false);
-
   // 피팅룸 결과 카드를 접었을 때 나타나는 플로팅 아이콘 탭 — 피팅룸 탭으로
   // 전환하고 카드를 다시 펼친다(완료 상태 아이콘을 탭했을 때도 동일).
   void _openFittingRoomFromFloatingIcon() {
     FittingProgress.collapsed.value = false;
     setState(() {
       _tabIndex = 2;
-      _showItemDetail = false;
     });
   }
 
@@ -218,20 +222,14 @@ class _AppShellState extends State<AppShell> {
           },
         ),
       ),
-      bottomNavigationBar: _showItemDetail
-          ? null
-          : _BottomNav(
-              activeIndex: _tabIndex,
-              onTap: (i) => setState(() {
-                _tabIndex = i;
-                _showItemDetail = false;
-              }),
-            ),
+      bottomNavigationBar: _BottomNav(
+        activeIndex: _tabIndex,
+        onTap: (i) => setState(() => _tabIndex = i),
+      ),
     );
   }
 
   Widget _buildBody() {
-    if (_showItemDetail) return ItemDetailScreen(onBack: _backFromDetail);
     switch (_tabIndex) {
       case 0:
         return HomeScreen(
@@ -250,13 +248,10 @@ class _AppShellState extends State<AppShell> {
           onClearItem: _clearFittingItem,
           onSetUserPhoto: _setFittingUserPhoto,
           onClearUserPhoto: _clearFittingUserPhoto,
-          onNavigateToDetail: _navigateToDetail,
         );
       case 3:
-        return const CoordBoardScreen();
-      case 4:
         return const CalendarScreen();
-      case 5:
+      case 4:
         return const SettingsScreen();
       default:
         return HomeScreen(
@@ -496,10 +491,6 @@ class _BottomNav extends StatelessWidget {
         icon: Icons.auto_awesome_outlined,
         activeIcon: Icons.auto_awesome,
         label: 'AI 피팅'),
-    _NavItem(
-        icon: Icons.dashboard_customize_outlined,
-        activeIcon: Icons.dashboard_customize,
-        label: '코디보드'),
     _NavItem(
         icon: Icons.calendar_month_outlined,
         activeIcon: Icons.calendar_month,
