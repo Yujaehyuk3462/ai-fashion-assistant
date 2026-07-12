@@ -13,6 +13,7 @@ import 'firestore_service.dart';
 import 'gemini_service.dart';
 import 'outfit_matcher.dart';
 import 'outfit_self_evaluator.dart';
+import 'weather_service.dart';
 
 // 주간 플랜 한 날의 결과 — Gemini가 배정한 조합을 UI 카드로 보여주기 위한 것.
 // Firestore에 바로 저장하지 않고, 사용자가 "이 코디로 확정"을 누른 날만 저장된다.
@@ -100,6 +101,33 @@ class AgentPlanner {
         relatedDocId: plan.id,
       ),
     ));
+
+    // 날씨를 관찰 도구로 사용 — 이 일정 날짜의 예보가 특이하면(비/극한 기온)
+    // 카드 문구에 반영할 근거로 남긴다. 조회 실패(null)면 조용히 건너뛴다.
+    final dayWeather = (await WeatherService.fetch())?.forDate(plan.date);
+    String? weatherNote;
+    if (dayWeather != null) {
+      if (dayWeather.precipitationProbability >= WeatherService.rainProbabilityThreshold) {
+        weatherNote = '비 예보가 있어 어두운 톤으로 준비했어요';
+      } else if (dayWeather.maxTempC >= 28) {
+        weatherNote = '더운 날씨 예보라 가볍게 준비했어요';
+      } else if (dayWeather.minTempC <= 5) {
+        weatherNote = '쌀쌀한 날씨 예보라 보온에 신경 썼어요';
+      }
+      if (weatherNote != null) {
+        unawaited(FirestoreService.addAgentLogSilently(
+          uid,
+          AgentLogEntry(
+            id: '',
+            eventType: AgentLogEntry.typeWeatherChecked,
+            message: '${_relativeLabel(plan.date)} 예보를 확인했습니다 — '
+                '강수확률 ${dayWeather.precipitationProbability}%, '
+                '최고 ${dayWeather.maxTempC.round()}°C/최저 ${dayWeather.minTempC.round()}°C',
+            relatedDocId: plan.id,
+          ),
+        ));
+      }
+    }
 
     final match = OutfitMatcher.findForTpo(
       wardrobe: wardrobe,
@@ -220,6 +248,7 @@ class AgentPlanner {
       reflectedFeedback: history.tagMatchCount > 0,
       isFallback: isFallback,
       confidenceNote: confidenceNote,
+      weatherNote: weatherNote,
     );
     final recId = await FirestoreService.addRecommendationSilently(uid, entry);
     if (recId == null) return;
@@ -309,6 +338,29 @@ class AgentPlanner {
       if (e.isPlanned) plannedByDate[_dateKey(e.date)] = e.tpoTag;
     }
 
+    // 날씨를 관찰 도구로 사용 — 7일 예보를 날짜별 제약으로 스케줄 줄에
+    // 덧붙인다. 조회 실패(null)면 조용히 날씨 제약 없이 진행한다.
+    final weather = await WeatherService.fetch();
+    if (weather != null) {
+      final rainyDayLabels = <String>[];
+      for (final d in weather.daily) {
+        final w = weather.forDate(d.date);
+        if (w != null && w.precipitationProbability >= WeatherService.rainProbabilityThreshold) {
+          rainyDayLabels.add(_weekdayKo(d.date));
+        }
+      }
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeWeatherChecked,
+          message: rainyDayLabels.isEmpty
+              ? '주간 예보를 확인했습니다 — 특별한 날씨 변수는 없었습니다'
+              : '주간 예보를 확인했습니다 — ${rainyDayLabels.join('・')}요일 비 예보를 플랜에 반영합니다',
+        ),
+      ));
+    }
+
     // 7일 스케줄 구성.
     final days = List.generate(
         _weeklyHorizonDays, (i) => today.add(Duration(days: i)));
@@ -320,7 +372,9 @@ class AgentPlanner {
       final tpo = plannedByDate[key] ?? '일상';
       tpoByDate[key] = tpo;
       final formality = TpoTags.byLabel(tpo).formalityHint;
-      scheduleLines.add('${i + 1}. $key (${_weekdayKo(d)}) — $tpo — 요구 격식: $formality');
+      final weatherNote = weather == null ? '' : _weatherConstraintNote(weather.forDate(d));
+      scheduleLines
+          .add('${i + 1}. $key (${_weekdayKo(d)}) — $tpo — 요구 격식: $formality$weatherNote');
     }
 
     final catalog = usable
@@ -570,6 +624,23 @@ class AgentPlanner {
 
   static const _weekdays = ['월', '화', '수', '목', '금', '토', '일'];
   static String _weekdayKo(DateTime d) => _weekdays[d.weekday - 1];
+
+  // 하루치 예보를 스케줄 줄에 덧붙일 제약 문구로 변환. 특이사항 없으면 빈 문자열.
+  static String _weatherConstraintNote(DailyWeather? w) {
+    if (w == null) return '';
+    final parts = <String>[];
+    if (w.precipitationProbability >= WeatherService.rainProbabilityThreshold) {
+      parts.add('비 예보(강수확률 ${w.precipitationProbability}%) — '
+          '밝은 색/니트류 회피, 방수 소재나 어두운 톤 우선');
+    }
+    if (w.maxTempC >= 28) {
+      parts.add('더운 날(최고 ${w.maxTempC.round()}°C) — 얇고 통풍 잘 되는 소재 우선');
+    } else if (w.minTempC <= 5) {
+      parts.add('추운 날(최저 ${w.minTempC.round()}°C) — 두꺼운 아우터 우선');
+    }
+    if (parts.isEmpty) return '';
+    return ' — ${parts.join(', ')}';
+  }
 
   // "오늘/내일/모레/N일 뒤" 상대 표기.
   static String _relativeLabel(DateTime date) {

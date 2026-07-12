@@ -48,6 +48,9 @@ class RecommendationEntry {
   // 확인해 남기는 자기 성능 인지 문구. null이면 카드에 표시하지 않는다
   // (표본이 부족하거나 채택률이 중간대라 눈에 띄게 언급할 필요가 없는 경우).
   final String? confidenceNote;
+  // ── 날씨 관찰 ── 선제 추천 대상 날짜의 예보(비/기온)가 특이할 때 남기는
+  // 문구. null이면 그 날 날씨가 평이했거나 예보 조회에 실패한 경우.
+  final String? weatherNote;
 
   const RecommendationEntry({
     required this.id,
@@ -69,6 +72,7 @@ class RecommendationEntry {
     this.repairAttempted = false,
     this.repairNote,
     this.confidenceNote,
+    this.weatherNote,
   });
 
   factory RecommendationEntry.fromFirestore(DocumentSnapshot doc) {
@@ -98,6 +102,7 @@ class RecommendationEntry {
       repairAttempted: data['repairAttempted'] as bool? ?? false,
       repairNote: data['repairNote'] as String?,
       confidenceNote: data['confidenceNote'] as String?,
+      weatherNote: data['weatherNote'] as String?,
     );
   }
 
@@ -123,6 +128,7 @@ class RecommendationEntry {
         if (repairAttempted) 'repairAttempted': repairAttempted,
         if (repairNote != null) 'repairNote': repairNote,
         if (confidenceNote != null) 'confidenceNote': confidenceNote,
+        if (weatherNote != null) 'weatherNote': weatherNote,
       };
 
   // "관련 코디 이력" 프롬프트 섹션에 한 줄씩 삽입할 요약. 실제로 다른 조합을

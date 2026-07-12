@@ -230,6 +230,8 @@ IconData _iconFor(String eventType) {
       return Icons.event_available_outlined;
     case AgentLogEntry.typeTaskRecovered:
       return Icons.replay_outlined;
+    case AgentLogEntry.typeWeatherChecked:
+      return Icons.wb_cloudy_outlined;
     default:
       return Icons.smart_toy_outlined;
   }

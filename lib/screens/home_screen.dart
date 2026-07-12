@@ -11,6 +11,7 @@ import '../models/wardrobe_item.dart';
 import '../services/agent_activity.dart';
 import '../services/agent_planner.dart';
 import '../services/firestore_service.dart';
+import '../services/weather_service.dart';
 import 'agent_log_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -216,6 +217,11 @@ class _RecommendationCardBody extends StatelessWidget {
       // 레벨 4: 차선 조합은 솔직하게 표시(거짓 만족 금지).
       if (entry.isFallback) {
         return '$tpo에 딱 맞는 조합은 없었지만, 옷장에서 가장 가까운 조합을 준비했어요 ($score점)';
+      }
+      // 날씨 관찰 — 이 날짜 예보가 특이했다면(비/극한 기온) 그 사실을 우선 보여준다.
+      if (entry.weatherNote != null) {
+        final rel = AgentPlanner.relativeLabel(entry.targetDate!);
+        return '$rel $tpo — ${entry.weatherNote}';
       }
       // 레벨 3: 과거 피드백이 실제 반영된 경우에만 표시.
       if (entry.reflectedFeedback) {
@@ -434,10 +440,98 @@ class _RecommendationCardBody extends StatelessWidget {
 }
 
 // ── 네이비 히어로 (인사 + 날씨) ──────────────────────────
-class _NavyHero extends StatelessWidget {
+// 날씨는 WeatherService(Open-Meteo, 서울 좌표 고정)에서 가져온다. 실패하면
+// 하드코딩된 값으로 폴백하지 않고 "불러오지 못했다"고 정직하게 표시한다.
+class _NavyHero extends StatefulWidget {
   final ValueChanged<int> onNavigate;
 
   const _NavyHero({required this.onNavigate});
+
+  @override
+  State<_NavyHero> createState() => _NavyHeroState();
+}
+
+class _NavyHeroState extends State<_NavyHero> {
+  WeatherSnapshot? _weather;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final snapshot = await WeatherService.fetch();
+    if (!mounted) return;
+    setState(() {
+      _weather = snapshot;
+      _loading = false;
+    });
+  }
+
+  // 로컬 규칙 기반 한 줄 조언(Gemini 호출 없음) — 오늘 강수확률이 높으면
+  // 비 관련 조언을 우선하고, 아니면 현재 기온대에 맞는 옷차림을 안내한다.
+  String _adviceFor(WeatherSnapshot w) {
+    final today = w.forDate(DateTime.now());
+    if (today != null && today.precipitationProbability >= WeatherService.rainProbabilityThreshold) {
+      return '비 예보가 있어요 — 우산과 함께 어두운 톤 추천';
+    }
+    final tempC = w.current.tempC;
+    if (tempC >= 28) return '더운 날씨예요 — 가볍고 통풍 잘 되는 소재가 좋아요';
+    if (tempC >= 23) return '반팔이나 얇은 셔츠가 적당한 날씨입니다';
+    if (tempC >= 17) return '가벼운 재킷 또는 긴팔이 적합한 날씨입니다';
+    if (tempC >= 9) return '니트나 가디건 등 보온에 신경 써주세요';
+    return '두꺼운 아우터가 필요한 쌀쌀한 날씨예요';
+  }
+
+  Widget _buildWeatherRow() {
+    if (_loading) {
+      return const SizedBox(
+        height: 15,
+        width: 15,
+        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+      );
+    }
+    final weather = _weather;
+    if (weather == null) {
+      return const Text(
+        '날씨 정보를 불러오지 못했어요',
+        style: TextStyle(color: Colors.white70, fontSize: 12),
+      );
+    }
+    final condition = weather.current.condition;
+    return Row(
+      children: [
+        Icon(condition.icon, color: const Color(0xFFFCD34D), size: 15),
+        const SizedBox(width: 8),
+        Text(
+          '${weather.current.tempC.round()}°C  ${condition.label}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.2,
+          ),
+        ),
+        const SizedBox(width: 16),
+        Container(width: 1, height: 12, color: Colors.white24),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Text(
+            _adviceFor(weather),
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.68),
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -501,36 +595,7 @@ class _NavyHero extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
             ),
-            child: Row(
-              children: [
-                const Icon(Icons.wb_sunny_outlined, color: Color(0xFFFCD34D), size: 15),
-                const SizedBox(width: 8),
-                const Text(
-                  '22°C  맑음',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Container(width: 1, height: 12, color: Colors.white24),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Text(
-                    '가벼운 재킷 또는 긴팔이 적합한 날씨입니다',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.68),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w400,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+            child: _buildWeatherRow(),
           ),
         ],
       ),
