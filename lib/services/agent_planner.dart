@@ -130,16 +130,27 @@ class AgentPlanner {
       ),
     ));
 
-    // 레벨 3: 과거 불일치 피드백을 프롬프트에 주입(있을 때만). 실제 주입된
-    // 경우에만 reflectedFeedback=true로 남겨 카드에 "반영했어요"를 표시한다.
-    final feedbackText = await _buildFeedbackText(uid, wardrobeById, tpo: plan.tpoTag);
-    if (feedbackText != null) {
+    // 레벨 3: 관련도 기반 과거 추천 이력을 프롬프트에 주입(있을 때만).
+    // recency가 아니라 relevance로 뽑는다 — 태그 일치 +3, 후보 아이템과
+    // 겹치는 아이템 1개당 +2, 과거 점수 80점 이상이면 +1. 태그가 실제로
+    // 일치한 경우에만 reflectedFeedback=true로 남겨 카드에 "반영했어요"를
+    // 표시한다.
+    final candidateItemIds =
+        match.candidates.expand((c) => c.items.map((i) => i.id)).toSet().toList();
+    final history = await FirestoreService.getRelevantHistorySilently(
+      uid,
+      tpoTag: plan.tpoTag,
+      candidateItemIds: candidateItemIds,
+      wardrobeById: wardrobeById,
+    );
+    final feedbackText = history.lines.isEmpty ? null : history.lines.join('\n');
+    if (history.tagMatchCount > 0) {
       unawaited(FirestoreService.addAgentLogSilently(
         uid,
         AgentLogEntry(
           id: '',
           eventType: AgentLogEntry.typeCandidatesGenerated,
-          message: '지난 [${plan.tpoTag}] 선택 피드백을 반영해 조합을 평가합니다',
+          message: '과거 [${plan.tpoTag}] 착장 ${history.tagMatchCount}건을 참고했습니다',
           relatedDocId: plan.id,
         ),
       ));
@@ -148,6 +159,7 @@ class AgentPlanner {
     final outcome = await OutfitSelfEvaluator.run(
       match.candidates,
       recentHistoryText: feedbackText,
+      isRelevanceRanked: !history.isFallback,
       onStep: ({required index, required total, score, required passed, required wasError}) {
         final String message;
         if (wasError) {
@@ -205,7 +217,7 @@ class AgentPlanner {
       candidateScores: outcome.candidateScores,
       targetDate: plan.date,
       targetTpoTag: plan.tpoTag,
-      reflectedFeedback: feedbackText != null,
+      reflectedFeedback: history.tagMatchCount > 0,
       isFallback: isFallback,
       confidenceNote: confidenceNote,
     );
@@ -275,47 +287,6 @@ class AgentPlanner {
     }
   }
 
-  // 최근 불일치 피드백을 RAG 프롬프트용 텍스트로 만든다. 같은 TPO를 앞으로
-  // 정렬한다. 피드백이 없으면 null(그 경우 카드에 반영 문구를 띄우지 않음).
-  static Future<String?> _buildFeedbackText(
-    String uid,
-    Map<String, WardrobeItem> wardrobeById, {
-    String? tpo,
-  }) async {
-    final feedback = await FirestoreService.getRecentFeedbackSilently(uid, limit: 5);
-    if (feedback.isEmpty) return null;
-    feedback.sort((a, b) {
-      final ai = a.targetTpoTag == tpo ? 0 : 1;
-      final bi = b.targetTpoTag == tpo ? 0 : 1;
-      return ai.compareTo(bi);
-    });
-
-    String fromSummaries(List<String> summaries) => summaries.map((s) {
-          final idx = s.indexOf(':');
-          if (idx < 0) return s.trim();
-          final cat = s.substring(0, idx).trim();
-          final color = s.substring(idx + 1).trim().split('/').first.trim();
-          return color.isEmpty ? cat : '$color $cat';
-        }).join('+');
-    String fromIds(List<String> ids) => ids
-        .map((id) => wardrobeById[id])
-        .whereType<WardrobeItem>()
-        .map((w) {
-          final c = w.attributes?.color ?? '';
-          return c.isEmpty ? w.category : '$c ${w.category}';
-        })
-        .join('+');
-
-    final lines = <String>['취향 피드백(반드시 반영할 것):'];
-    for (final f in feedback) {
-      final chosen = fromIds(f.userChosenItemIds);
-      if (chosen.isEmpty) continue;
-      lines.add(
-          '- 이 사용자는 [${f.targetTpoTag ?? '일상'}] 상황에서 에이전트가 제안한 (${fromSummaries(f.itemSummaries)}) 대신 ($chosen)를 선택한 적이 있음. 이런 취향 차이를 반영할 것.');
-    }
-    return lines.length > 1 ? lines.join('\n') : null;
-  }
-
   // ── 레벨 2: 주간 코디 플랜 (버튼 트리거) ──────────────────
   // 오늘부터 7일의 일정(예정 태그 없으면 '일상')과 옷장 전체를 Gemini에 단
   // 1회 호출해 제약(중복 회피·격식 배분)을 고려한 날짜별 조합을 받는다.
@@ -356,11 +327,17 @@ class AgentPlanner {
         .map((i) => '- id=${i.id} | ${i.category} | ${i.attributes!.toPromptLine()}')
         .join('\n');
 
-    // 레벨 3: 최근 불일치 피드백을 주간 플랜 프롬프트에도 주입한다.
-    final feedbackText = await _buildFeedbackText(uid, byId);
+    // 레벨 3: 관련도 기반 과거 추천 이력을 주간 플랜 프롬프트에도 주입한다.
+    // 하루짜리 후보 조합이 없어 tpoTag/candidateItemIds 없이 호출 — 이 경우
+    // colorScore>=80 축만 유효해 "잘 됐던 과거 추천 위주"로 걸러진다.
+    final history = await FirestoreService.getRelevantHistorySilently(
+      uid,
+      wardrobeById: byId,
+    );
+    final feedbackText = history.lines.isEmpty ? null : history.lines.join('\n');
 
     debugPrint('[PLAN] 주간 플랜 요청: ${days.length}일, 옷장 ${usable.length}벌'
-        '${feedbackText != null ? ' (피드백 반영)' : ''}');
+        '${feedbackText != null ? ' (이력 ${history.lines.length}건 반영)' : ''}');
     String raw;
     try {
       raw = await GeminiService.withTextModelFallback(

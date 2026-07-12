@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'wardrobe_item.dart';
 
 // users/{uid}/recommendations 컬렉션 문서 — 새 옷 등록을 계기로 백그라운드에서
 // 자동 생성된 "능동 추천" 코디 1건. dismiss 시 대상 문서를 지정해야 해서
@@ -123,4 +124,39 @@ class RecommendationEntry {
         if (repairNote != null) 'repairNote': repairNote,
         if (confidenceNote != null) 'confidenceNote': confidenceNote,
       };
+
+  // "관련 코디 이력" 프롬프트 섹션에 한 줄씩 삽입할 요약. 실제로 다른 조합을
+  // 선택했던 기록(rejected_with_alternative)이면 그 대안 아이템까지 구체적으로
+  // 남긴다 — 가장 강한 교정 신호이므로 생략하지 않는다(wardrobeById가 있을
+  // 때만 대안 아이템의 색상/카테고리를 복원할 수 있다).
+  String toPromptLine({Map<String, WardrobeItem>? wardrobeById}) {
+    final tagText = '[${targetTpoTag ?? '일상'}] ';
+    final proposed = itemSummaries.map((s) {
+      final idx = s.indexOf(':');
+      if (idx < 0) return s.trim();
+      final cat = s.substring(0, idx).trim();
+      final color = s.substring(idx + 1).trim().split('/').first.trim();
+      return color.isEmpty ? cat : '$color $cat';
+    }).join('+');
+
+    if (userChoice == choiceRejectedWithAlternative &&
+        userChosenItemIds.isNotEmpty &&
+        wardrobeById != null) {
+      final chosen = userChosenItemIds
+          .map((id) => wardrobeById[id])
+          .whereType<WardrobeItem>()
+          .map((w) {
+            final c = w.attributes?.color ?? '';
+            return c.isEmpty ? w.category : '$c ${w.category}';
+          })
+          .join('+');
+      if (chosen.isNotEmpty) {
+        return '$tagText상황에서 제안한 ($proposed) 대신 ($chosen)를 선택한 적이 있음';
+      }
+    }
+
+    final scoreText = colorScore != null ? ', 점수 $colorScore' : '';
+    final choiceText = userChoice == choiceAccepted ? ' — 채택됨' : '';
+    return '$tagText$proposed$scoreText$choiceText';
+  }
 }

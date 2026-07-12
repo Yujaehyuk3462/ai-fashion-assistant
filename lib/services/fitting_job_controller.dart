@@ -48,23 +48,27 @@ class FittingJobController extends ChangeNotifier {
     final debugT0 = DateTime.now();
     try {
       // 이력 조회는 속성 준비와 서로 의존하지 않으므로 동시에 시작해 지연을 숨긴다.
+      // recency가 아니라 relevance로 뽑는다 — 지금 고른 옷들과 겹치는 과거
+      // 추천을 우선한다(태그는 이 화면엔 없으니 생략).
       final uid = FirebaseAuth.instance.currentUser?.uid;
-      final recentHistoryFuture = uid != null
-          ? FirestoreService.getRecentHistorySilently(uid, limit: 10)
-          : Future.value(<OutfitHistoryEntry>[]);
+      final candidateItemIds = clothingItems.map((i) => i.id).toList();
+      final relevantHistoryFuture = uid != null
+          ? FirestoreService.getRelevantHistorySilently(uid, candidateItemIds: candidateItemIds)
+          : Future.value(
+              (lines: <String>[], tagMatchCount: 0, itemOverlapCount: 0, isFallback: false));
 
       final itemsWithAttributes = await _resolveAttributes(clothingItems);
       final debugT1 = DateTime.now();
       debugPrint('[TIMING] 1) 속성 준비: ${debugT1.difference(debugT0).inMilliseconds}ms');
 
-      final recentHistory = await recentHistoryFuture;
-      final recentHistoryText = recentHistory.isEmpty
-          ? null
-          : recentHistory.map((e) => e.toPromptLine()).join('\n');
+      final relevantHistory = await relevantHistoryFuture;
+      final recentHistoryText =
+          relevantHistory.lines.isEmpty ? null : relevantHistory.lines.join('\n');
+      final isRelevanceRanked = !relevantHistory.isFallback;
       final debugT1b = DateTime.now();
       debugPrint('[TIMING] 1b) 이력 조회(속성 준비와 병렬, 순수 대기분): '
           '${debugT1b.difference(debugT1).inMilliseconds}ms');
-      debugPrint('[HISTORY] 최근 이력 ${recentHistory.length}건 조회됨'
+      debugPrint('[HISTORY] 관련 이력 ${relevantHistory.lines.length}건 조회됨'
           '${recentHistoryText != null ? ' — 프롬프트에 전달:\n$recentHistoryText' : ' (없음, 섹션 생략)'}');
 
       try {
@@ -75,6 +79,7 @@ class FittingJobController extends ChangeNotifier {
           userPhotoUrl: userPhoto?.imageUrl,
           userProfile: userProfile,
           recentHistoryText: recentHistoryText,
+          isRelevanceRanked: isRelevanceRanked,
         )) {
           debugFirstChunkAt ??= DateTime.now();
           buffer.write(chunk);
@@ -100,6 +105,7 @@ class FittingJobController extends ChangeNotifier {
             userPhotoUrl: userPhoto?.imageUrl,
             userProfile: userProfile,
             recentHistoryText: recentHistoryText,
+            isRelevanceRanked: isRelevanceRanked,
             model: model,
           ),
         );

@@ -85,6 +85,9 @@ class OutfitSelfEvaluator {
     List<OutfitMatch> candidates, {
     SelfEvalStep? onStep,
     String? recentHistoryText, // 취향/피드백 컨텍스트(RAG) — 있으면 평가 프롬프트에 주입
+    // recentHistoryText가 relevance 기반으로 뽑힌 것인지(vs 관련 신호 없어
+    // 최신순 폴백) — 프롬프트 헤더 문구 선택에 그대로 전달된다.
+    bool isRelevanceRanked = false,
     bool enableRepair = false,
     // enableRepair일 때만 사용 — 교체 대상에서 제외할 기준 아이템(새 옷)과
     // 교체 후보를 찾을 전체 옷장.
@@ -113,6 +116,7 @@ class OutfitSelfEvaluator {
                 .map((it) => (category: it.category, attributes: it.attributes!))
                 .toList(),
             recentHistoryText: recentHistoryText,
+            isRelevanceRanked: isRelevanceRanked,
             model: model,
           ),
         );

@@ -232,6 +232,10 @@ class GeminiService {
     String? userPhotoUrl,
     UserProfile? userProfile,
     String? recentHistoryText,
+    // true면 recentHistoryText가 relevance 기반으로 뽑힌 것 — 이력 섹션
+    // 헤더가 "관련 코디 이력(상황·아이템 기준 검색됨)"으로 바뀐다. false(기본,
+    // 관련 신호 없어 최신순 폴백된 경우 포함)면 기존 "최근 코디 이력" 헤더.
+    bool isRelevanceRanked = false,
     String? model,
   }) async {
     // 옷 이미지는 더 이상 보내지 않는다 — 등록 시점에 뽑아둔 색상/스타일/
@@ -250,12 +254,12 @@ class GeminiService {
 
     final prompt = hasProfile
         ? _buildAttributeAnalysisPromptWithProfile(items, userProfile,
-            recentHistoryText: recentHistoryText)
+            recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked)
         : (userPhotoUrl != null
             ? _buildAttributeAnalysisPromptWithPhoto(items,
-                recentHistoryText: recentHistoryText)
+                recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked)
             : _buildAttributeAnalysisPrompt(items,
-                recentHistoryText: recentHistoryText));
+                recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked));
     _debugLogHistoryInclusion(prompt, recentHistoryText);
 
     final parts = <Map<String, dynamic>>[
@@ -367,6 +371,7 @@ $feedbackSection
     String? userPhotoUrl,
     UserProfile? userProfile,
     String? recentHistoryText,
+    bool isRelevanceRanked = false,
     String? model,
   }) async* {
     final hasProfile = userProfile != null && userProfile.hasAnyData;
@@ -381,12 +386,12 @@ $feedbackSection
 
     final prompt = hasProfile
         ? _buildAttributeAnalysisPromptWithProfile(items, userProfile,
-            recentHistoryText: recentHistoryText)
+            recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked)
         : (userPhotoUrl != null
             ? _buildAttributeAnalysisPromptWithPhoto(items,
-                recentHistoryText: recentHistoryText)
+                recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked)
             : _buildAttributeAnalysisPrompt(items,
-                recentHistoryText: recentHistoryText));
+                recentHistoryText: recentHistoryText, isRelevanceRanked: isRelevanceRanked));
     _debugLogHistoryInclusion(prompt, recentHistoryText);
 
     final parts = <Map<String, dynamic>>[
@@ -541,12 +546,18 @@ $clothingList
         .join('\n');
   }
 
-  // 최근 코디 이력을 프롬프트에 끼워 넣을 섹션 텍스트로 감싼다.
-  // 이력이 없으면(신규 사용자, 조회 실패 등) 빈 문자열을 반환해 기존
-  // 프롬프트 형식(섹션 없이 빈 줄 하나)이 그대로 유지되게 한다.
-  static String _buildHistorySection(String? recentHistoryText) {
+  // 코디 이력을 프롬프트에 끼워 넣을 섹션 텍스트로 감싼다. 이력이 없으면
+  // (신규 사용자, 조회 실패 등) 빈 문자열을 반환해 기존 프롬프트 형식(섹션
+  // 없이 빈 줄 하나)이 그대로 유지되게 한다. isRelevanceRanked가 true면
+  // relevance 기반으로 뽑힌 것이므로 헤더로 그 사실을 정직하게 밝힌다(관련
+  // 신호가 없어 최신순으로 폴백된 경우는 false로 넘어와 기존 헤더를 쓴다).
+  static String _buildHistorySection(String? recentHistoryText,
+      {bool isRelevanceRanked = false}) {
     if (recentHistoryText == null || recentHistoryText.isEmpty) return '';
-    return '\n최근 코디 이력(참고용 — 사용자가 과거에 시도했던 조합입니다. 취향 파악에 참고하되 그대로 반복 추천하지는 마세요):\n$recentHistoryText\n';
+    final header = isRelevanceRanked
+        ? '관련 코디 이력(상황·아이템 기준 검색됨 — 취향 파악에 참고하되 그대로 반복 추천하지는 마세요)'
+        : '최근 코디 이력(참고용 — 사용자가 과거에 시도했던 조합입니다. 취향 파악에 참고하되 그대로 반복 추천하지는 마세요)';
+    return '\n$header:\n$recentHistoryText\n';
   }
 
   // 이력 섹션이 실제로 최종 프롬프트 문자열에 포함됐는지 눈으로 바로
@@ -561,9 +572,11 @@ $clothingList
   static String _buildAttributeAnalysisPromptWithPhoto(
     List<({String category, ClothingAttributes attributes})> items, {
     String? recentHistoryText,
+    bool isRelevanceRanked = false,
   }) {
     final itemLines = _itemsToPromptLines(items);
-    final historySection = _buildHistorySection(recentHistoryText);
+    final historySection =
+        _buildHistorySection(recentHistoryText, isRelevanceRanked: isRelevanceRanked);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 
@@ -598,9 +611,11 @@ $historySection
     List<({String category, ClothingAttributes attributes})> items,
     UserProfile profile, {
     String? recentHistoryText,
+    bool isRelevanceRanked = false,
   }) {
     final itemLines = _itemsToPromptLines(items);
-    final historySection = _buildHistorySection(recentHistoryText);
+    final historySection =
+        _buildHistorySection(recentHistoryText, isRelevanceRanked: isRelevanceRanked);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 
@@ -637,9 +652,11 @@ $historySection
   static String _buildAttributeAnalysisPrompt(
     List<({String category, ClothingAttributes attributes})> items, {
     String? recentHistoryText,
+    bool isRelevanceRanked = false,
   }) {
     final itemLines = _itemsToPromptLines(items);
-    final historySection = _buildHistorySection(recentHistoryText);
+    final historySection =
+        _buildHistorySection(recentHistoryText, isRelevanceRanked: isRelevanceRanked);
     return '''
 당신은 세련된 중년 남성을 위한 전문 패션 스타일리스트입니다.
 아래에 텍스트로 설명된 의류 조합을 보고, 컬러 조합을 점수로 평가하고 코디 분석 및 다른 색상 추천을 해 주세요. 실제 이미지는 첨부되지 않았으니 아래 설명만으로 판단해 주세요.

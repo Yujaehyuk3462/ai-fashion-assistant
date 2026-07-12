@@ -320,28 +320,86 @@ class FirestoreService {
     }
   }
 
-  // 최근 "불일치 피드백"(추천 대신 다른 조합을 고른) 기록. RAG 프롬프트에
-  // 주입해 취향 차이를 반영한다. where(userChoice==) 단일 필드라 복합 인덱스
-  // 불필요 — orderBy 없이 넉넉히 가져와 클라이언트에서 최신순 정렬한다.
-  static Future<List<RecommendationEntry>> getRecentFeedbackSilently(
+  // 최근 추천 이력 원본 조회 — getRelevantHistorySilently가 관련도 계산의
+  // 재료로 쓴다. orderBy 단독이라 복합 인덱스 불필요.
+  static Future<List<RecommendationEntry>> recentRecommendationsSilently(
     String uid, {
-    int limit = 5,
+    int limit = 30,
   }) async {
     try {
       final snapshot = await _db
           .collection(_usersCol)
           .doc(uid)
           .collection(_recommendationsCol)
-          .where('userChoice', isEqualTo: RecommendationEntry.choiceRejectedWithAlternative)
-          .limit(20)
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
           .get();
-      final list = snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      return list.take(limit).toList();
+      return snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList();
     } catch (e) {
-      debugPrint('[FEEDBACK] 최근 피드백 조회 실패: $e');
+      debugPrint('[RAG] 최근 추천 이력 조회 실패: $e');
       return [];
     }
+  }
+
+  // RAG 프롬프트에 주입할 "관련 코디 이력" — recency가 아니라 relevance로
+  // 뽑는다. 최근 이력 30건을 한 번에 가져와(기존 recentRecommendationsSilently
+  // 재사용, 새 인덱스 불필요) 클라이언트에서 점수를 매긴다:
+  //  · tpoTag 일치 → +3
+  //  · candidateItemIds와 겹치는 itemId 1개당 → +2
+  //  · colorScore >= 80 → +1
+  //  · 동점이면 최신순
+  // 전부 0점이면(관련 신호가 하나도 없으면) 관련 없다고 빈손으로 가는 대신
+  // 최신순 limit건으로 폴백한다 — 이 경우 isFallback=true.
+  static Future<
+      ({
+        List<String> lines,
+        int tagMatchCount,
+        int itemOverlapCount,
+        bool isFallback,
+      })> getRelevantHistorySilently(
+    String uid, {
+    String? tpoTag,
+    List<String>? candidateItemIds,
+    int limit = 5,
+    Map<String, WardrobeItem>? wardrobeById,
+  }) async {
+    final pool = await recentRecommendationsSilently(uid, limit: 30);
+    if (pool.isEmpty) {
+      return (lines: <String>[], tagMatchCount: 0, itemOverlapCount: 0, isFallback: false);
+    }
+
+    final candidateSet = candidateItemIds?.toSet() ?? const <String>{};
+    final scored = pool.map((entry) {
+      var score = 0;
+      final tagMatch = tpoTag != null && entry.targetTpoTag == tpoTag;
+      if (tagMatch) score += 3;
+      final overlap =
+          candidateSet.isEmpty ? 0 : entry.itemIds.where(candidateSet.contains).length;
+      score += overlap * 2;
+      if ((entry.colorScore ?? 0) >= 80) score += 1;
+      return (entry: entry, score: score, tagMatch: tagMatch, overlap: overlap);
+    }).toList()
+      ..sort((a, b) {
+        final byScore = b.score.compareTo(a.score);
+        if (byScore != 0) return byScore;
+        return b.entry.createdAt.compareTo(a.entry.createdAt);
+      });
+
+    final isFallback = scored.every((s) => s.score == 0);
+    final chosen = scored.take(limit).toList();
+    final tagMatchCount = chosen.where((s) => s.tagMatch).length;
+    final itemOverlapCount = chosen.where((s) => s.overlap > 0).length;
+
+    debugPrint('[RAG] 이력 ${pool.length}건 중 관련도 상위 ${chosen.length}건 선택 '
+        '(태그일치 $tagMatchCount건, 아이템겹침 $itemOverlapCount건)'
+        '${isFallback ? ' — 관련 신호 없어 최신순 폴백' : ''}');
+
+    return (
+      lines: chosen.map((s) => s.entry.toPromptLine(wardrobeById: wardrobeById)).toList(),
+      tagMatchCount: tagMatchCount,
+      itemOverlapCount: itemOverlapCount,
+      isFallback: isFallback,
+    );
   }
 
   // ── 에이전트 활동 로그 (백그라운드 행동 서사, 본인만 접근 가능) ──
