@@ -214,6 +214,27 @@ class FirestoreService {
     }
   }
 
+  // 채택률 지표(AgentStats)용 — 최근 N일 추천 전체(dismissed 무관)를 가져와
+  // 호출부가 userChoice로 클라이언트 필터링한다. createdAt 단일 range라
+  // 복합 인덱스 불필요.
+  static Future<List<RecommendationEntry>> recommendationsSinceSilently(
+    String uid,
+    DateTime since,
+  ) async {
+    try {
+      final snapshot = await _db
+          .collection(_usersCol)
+          .doc(uid)
+          .collection(_recommendationsCol)
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+          .get();
+      return snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList();
+    } catch (e) {
+      debugPrint('[STATS] 최근 추천 조회 실패: $e');
+      return [];
+    }
+  }
+
   // dismissed == false인 것 중 최신 1건만 — 홈 화면 카드는 항상 최대 1개만 노출한다.
   static Stream<RecommendationEntry?> recommendationStream(String uid) {
     return _db
@@ -311,7 +332,7 @@ class FirestoreService {
           .collection(_usersCol)
           .doc(uid)
           .collection(_recommendationsCol)
-          .where('userChoice', isEqualTo: 'rejected_with_alternative')
+          .where('userChoice', isEqualTo: RecommendationEntry.choiceRejectedWithAlternative)
           .limit(20)
           .get();
       final list = snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList()

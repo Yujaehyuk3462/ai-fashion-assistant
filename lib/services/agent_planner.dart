@@ -8,6 +8,7 @@ import '../models/outfit_calendar_entry.dart';
 import '../models/recommendation_entry.dart';
 import '../models/wardrobe_item.dart';
 import 'agent_activity.dart';
+import 'agent_stats.dart';
 import 'firestore_service.dart';
 import 'gemini_service.dart';
 import 'outfit_matcher.dart';
@@ -175,6 +176,21 @@ class AgentPlanner {
     final isFallback =
         match.isFallback || (outcome.bestScore != null && outcome.bestScore! < _lowScoreFloor);
 
+    // ── 채택률 지표: 자기 성능 인지 문구 ── 이 태그에서 과거 채택률이
+    // 뚜렷하게 낮거나(아직 배우는 중) 높으면(자신 있음) 카드에 솔직하게
+    // 밝힌다. 표본이 애매하면(중간 채택률이거나 건수 부족) 아무 말도
+    // 덧붙이지 않는다 — 근거 없는 자신감/과한 겸손 둘 다 피한다.
+    final stats = await AgentStats.compute(uid);
+    final tagStat = stats.forTag(plan.tpoTag);
+    String? confidenceNote;
+    if (tagStat != null && tagStat.total >= 2 && tagStat.rate < 0.5) {
+      confidenceNote = '[${plan.tpoTag}] 코디 취향은 아직 배우는 중이에요 — '
+          '피드백이 쌓일수록 정확해집니다';
+    } else if (tagStat != null && tagStat.total >= 3 && tagStat.rate >= 0.8) {
+      final percent = (tagStat.rate * 100).round();
+      confidenceNote = '[${plan.tpoTag}] 코디는 자신 있어요 (최근 채택률 $percent%)';
+    }
+
     final entry = RecommendationEntry(
       id: '',
       itemIds: outcome.bestMatch.items.map((i) => i.id).toList(),
@@ -191,6 +207,7 @@ class AgentPlanner {
       targetTpoTag: plan.tpoTag,
       reflectedFeedback: feedbackText != null,
       isFallback: isFallback,
+      confidenceNote: confidenceNote,
     );
     final recId = await FirestoreService.addRecommendationSilently(uid, entry);
     if (recId == null) return;
@@ -229,7 +246,7 @@ class AgentPlanner {
       final accepted = recSet.length == chosenSet.length && recSet.containsAll(chosenSet);
       if (accepted) {
         await FirestoreService.updateRecommendationFeedbackSilently(uid, rec.id,
-            userChoice: 'accepted');
+            userChoice: RecommendationEntry.choiceAccepted);
         unawaited(FirestoreService.addAgentLogSilently(
           uid,
           AgentLogEntry(
@@ -241,7 +258,8 @@ class AgentPlanner {
         ));
       } else {
         await FirestoreService.updateRecommendationFeedbackSilently(uid, rec.id,
-            userChoice: 'rejected_with_alternative', userChosenItemIds: entry.itemIds);
+            userChoice: RecommendationEntry.choiceRejectedWithAlternative,
+            userChosenItemIds: entry.itemIds);
         unawaited(FirestoreService.addAgentLogSilently(
           uid,
           AgentLogEntry(

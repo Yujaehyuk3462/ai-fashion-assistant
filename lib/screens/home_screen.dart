@@ -376,6 +376,28 @@ class _RecommendationCardBody extends StatelessWidget {
                     ],
                   ),
                 ],
+                // 채택률 지표 기반 자기 성능 인지 문구(선제 추천에서만 채워짐).
+                if (entry.confidenceNote != null) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.insights_outlined, color: AppColors.textMuted, size: 12),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          entry.confidenceNote!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 // "방금 한 일 보기" — 카드 하단에서 에이전트 활동 로그로 진입.
                 // 카드 본체 탭(피팅룸 열기)과 겹치지 않게 자체 GestureDetector가
                 // 탭을 소비한다(안쪽 제스처가 우선).

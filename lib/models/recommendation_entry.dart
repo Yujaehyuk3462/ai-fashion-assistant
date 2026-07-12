@@ -4,6 +4,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 // 자동 생성된 "능동 추천" 코디 1건. dismiss 시 대상 문서를 지정해야 해서
 // (OutfitHistoryEntry와 달리) doc.id를 들고 있는 WardrobeItem 패턴을 따른다.
 class RecommendationEntry {
+  // userChoice에 들어가는 알려진 값. AgentStats/피드백 감지 로직이 리터럴
+  // 문자열 대신 이 상수를 참조한다.
+  static const choiceAccepted = 'accepted';
+  static const choiceRejectedWithAlternative = 'rejected_with_alternative';
+
   final String id;
   final List<String> itemIds;
   final List<String> itemSummaries; // "카테고리: 속성" 한 줄 요약, HistoryEntry와 동일 패턴
@@ -38,6 +43,10 @@ class RecommendationEntry {
   // 다듬었다"는 문구를 보여준다.
   final bool repairAttempted;
   final String? repairNote; // 예: "아우터 교체(격식 개선)"
+  // ── 채택률 지표 ── 선제 추천 생성 시점에 해당 targetTpoTag의 최근 채택률을
+  // 확인해 남기는 자기 성능 인지 문구. null이면 카드에 표시하지 않는다
+  // (표본이 부족하거나 채택률이 중간대라 눈에 띄게 언급할 필요가 없는 경우).
+  final String? confidenceNote;
 
   const RecommendationEntry({
     required this.id,
@@ -58,6 +67,7 @@ class RecommendationEntry {
     this.isFallback = false,
     this.repairAttempted = false,
     this.repairNote,
+    this.confidenceNote,
   });
 
   factory RecommendationEntry.fromFirestore(DocumentSnapshot doc) {
@@ -86,6 +96,7 @@ class RecommendationEntry {
       isFallback: data['isFallback'] as bool? ?? false,
       repairAttempted: data['repairAttempted'] as bool? ?? false,
       repairNote: data['repairNote'] as String?,
+      confidenceNote: data['confidenceNote'] as String?,
     );
   }
 
@@ -110,5 +121,6 @@ class RecommendationEntry {
         if (isFallback) 'isFallback': isFallback,
         if (repairAttempted) 'repairAttempted': repairAttempted,
         if (repairNote != null) 'repairNote': repairNote,
+        if (confidenceNote != null) 'confidenceNote': confidenceNote,
       };
 }
