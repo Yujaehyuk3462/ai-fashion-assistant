@@ -517,25 +517,11 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.checkroom, color: AppColors.navy, size: 22),
-              const SizedBox(width: 8),
               const Text('AI 피팅룸',
                   style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 22,
                       fontWeight: FontWeight.w800)),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                    color: AppColors.bluePale,
-                    borderRadius: BorderRadius.circular(20)),
-                child: const Text('BETA',
-                    style: TextStyle(
-                        color: AppColors.blue,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800)),
-              ),
             ],
           ),
           const SizedBox(height: 4),

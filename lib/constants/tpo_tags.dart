@@ -22,7 +22,7 @@ class TpoTags {
   static const all = <TpoTag>[
     TpoTag(label: '출근', icon: Icons.work_outline, color: AppColors.navy, formalityHint: '세미포멀'),
     TpoTag(label: '데이트', icon: Icons.favorite_border, color: AppColors.red, formalityHint: '세미포멀'),
-    TpoTag(label: '여행', icon: Icons.flight_takeoff, color: AppColors.teal, formalityHint: '캐주얼'),
+    TpoTag(label: '여행', icon: Icons.flight_takeoff, color: AppColors.blue, formalityHint: '캐주얼'),
     TpoTag(label: '운동', icon: Icons.fitness_center, color: AppColors.green, formalityHint: '캐주얼'),
     TpoTag(label: '모임', icon: Icons.groups_outlined, color: AppColors.purple, formalityHint: '세미포멀'),
     TpoTag(label: '일상', icon: Icons.wb_sunny_outlined, color: AppColors.amber, formalityHint: '캐주얼'),

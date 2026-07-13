@@ -538,14 +538,14 @@ class _BottomNav extends StatelessWidget {
                         height: 30,
                         decoration: BoxDecoration(
                           color: isActive
-                              ? AppColors.bluePale
+                              ? const Color(0xFFEDEDED)
                               : Colors.transparent,
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Icon(
                           isActive ? item.activeIcon : item.icon,
                           color: isActive
-                              ? AppColors.blue
+                              ? Colors.black
                               : AppColors.textPlaceholder,
                           size: 21,
                         ),
@@ -561,7 +561,7 @@ class _BottomNav extends StatelessWidget {
                           fontWeight:
                               isActive ? FontWeight.w700 : FontWeight.w500,
                           color: isActive
-                              ? AppColors.blue
+                              ? Colors.black
                               : AppColors.textPlaceholder,
                         ),
                       ),

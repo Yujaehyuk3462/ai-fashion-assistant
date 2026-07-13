@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../constants/app_colors.dart';
+import '../constants/tpo_tags.dart';
+import '../models/outfit_calendar_entry.dart';
 import '../models/recommendation_entry.dart';
 import '../models/wardrobe_item.dart';
 import '../services/agent_activity.dart';
@@ -27,12 +29,10 @@ class HomeScreen extends StatelessWidget {
         child: SafeArea(
           bottom: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _TopBar(onNavigate: onNavigate),
-                const SizedBox(height: 28),
                 const Text(
                   '오늘 뭐 입지?',
                   style: TextStyle(
@@ -63,30 +63,12 @@ class HomeScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 _RecommendationCard(onOpenFittingRoom: onOpenFittingRoom, onNavigate: onNavigate),
+                const SizedBox(height: 32),
+                _WeeklyCalendarSection(onNavigate: onNavigate),
               ],
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-// ── 상단 바: 로고 ──────────────────────────────────────
-class _TopBar extends StatelessWidget {
-  final ValueChanged<int> onNavigate;
-
-  const _TopBar({required this.onNavigate});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Text(
-      'DOT.',
-      style: TextStyle(
-        color: Colors.black,
-        fontSize: 22,
-        fontWeight: FontWeight.w900,
-        letterSpacing: -0.5,
       ),
     );
   }
@@ -499,6 +481,370 @@ class _EmptyCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── 착장 캘린더(주간) 임베드: 캘린더 탭의 핵심 기능(기록 추가·수정·삭제)을
+// 홈 화면에서 한 주 단위로 바로 쓸 수 있게 옮겨왔다. 월간 전체 보기는
+// "월별 보기"를 눌러 기존 캘린더 탭(index 3)에서 그대로 이용한다.
+class _WeeklyCalendarSection extends StatefulWidget {
+  final ValueChanged<int> onNavigate;
+
+  const _WeeklyCalendarSection({required this.onNavigate});
+
+  @override
+  State<_WeeklyCalendarSection> createState() => _WeeklyCalendarSectionState();
+}
+
+class _WeeklyCalendarSectionState extends State<_WeeklyCalendarSection> {
+  static const _weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+
+  DateTime _selectedDay = OutfitCalendarEntry.normalizeDate(DateTime.now());
+  List<OutfitCalendarEntry> _weekEntries = const [];
+  bool _loading = true;
+
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  // 일요일 시작 기준 이번 주 첫날.
+  DateTime get _weekStart {
+    final offset = _selectedDay.weekday % 7; // 월=1..토=6, 일=7→0
+    return _selectedDay.subtract(Duration(days: offset));
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  Future<void> _load() async {
+    final uid = _uid;
+    if (uid == null) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    final weekStart = _weekStart;
+    final weekEnd = weekStart.add(const Duration(days: 6));
+    final entries = await FirestoreService.calendarEntriesForRange(uid, weekStart, weekEnd);
+    if (!mounted) return;
+    setState(() {
+      _weekEntries = entries;
+      _loading = false;
+    });
+  }
+
+  List<OutfitCalendarEntry> _entriesForDay(DateTime day) =>
+      _weekEntries.where((e) => _isSameDay(e.date, day)).toList();
+
+  Future<void> _openRecordSheet(DateTime date, {OutfitCalendarEntry? existing}) async {
+    final saved = await showCalendarRecordSheet(
+      context,
+      date: date,
+      existingEntryId: existing?.id,
+      initialTpoTag: existing?.tpoTag,
+    );
+    if (saved == true) _load();
+  }
+
+  Future<void> _confirmDelete(OutfitCalendarEntry entry) async {
+    final uid = _uid;
+    if (uid == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('기록 삭제',
+            style:
+                TextStyle(color: AppColors.textPrimary, fontSize: 17, fontWeight: FontWeight.w700)),
+        content: const Text('이 착장 기록을 삭제하시겠습니까?',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소',
+                style: TextStyle(color: AppColors.textMuted, fontWeight: FontWeight.w600)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('삭제',
+                style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final uidNow = _uid;
+      if (uidNow == null) return;
+      await FirestoreService.deleteCalendarEntry(uidNow, entry.id);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('삭제 실패: $e'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.red,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_uid == null) return const SizedBox.shrink();
+    final weekStart = _weekStart;
+    final days = List.generate(7, (i) => weekStart.add(Duration(days: i)));
+    final selectedEntries = _entriesForDay(_selectedDay);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('착장 캘린더',
+                style: TextStyle(
+                    color: AppColors.textPrimary, fontSize: 15, fontWeight: FontWeight.w800)),
+            GestureDetector(
+              onTap: () => widget.onNavigate(3),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('월별 보기',
+                      style: TextStyle(
+                          color: AppColors.textMuted, fontSize: 12, fontWeight: FontWeight.w600)),
+                  SizedBox(width: 2),
+                  Icon(Icons.chevron_right, color: AppColors.textMuted, size: 16),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        if (_loading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child:
+                Center(child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.textMuted)),
+          )
+        else ...[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: List.generate(7, (i) {
+              final day = days[i];
+              final isSelected = _isSameDay(day, _selectedDay);
+              final hasEntry = _entriesForDay(day).isNotEmpty;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedDay = OutfitCalendarEntry.normalizeDate(day)),
+                child: Column(
+                  children: [
+                    Text(
+                      _weekdayLabels[i],
+                      style: TextStyle(
+                        color: i == 0 ? AppColors.red : AppColors.textMuted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 160),
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: isSelected ? Colors.black : Colors.transparent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
+                        '${day.day}',
+                        style: TextStyle(
+                          color: isSelected ? Colors.white : AppColors.textPrimary,
+                          fontSize: 14,
+                          fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Container(
+                      width: 4,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: hasEntry ? Colors.black : Colors.transparent,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 18),
+          _buildDayCard(selectedEntries),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDayCard(List<OutfitCalendarEntry> entries) {
+    if (entries.isEmpty) {
+      return GestureDetector(
+        onTap: () => _openRecordSheet(_selectedDay),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 32),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            children: [
+              const Icon(Icons.checkroom_outlined, color: AppColors.textDisabled, size: 26),
+              const SizedBox(height: 10),
+              Text(
+                '${_selectedDay.month}월 ${_selectedDay.day}일 착장 기록하기',
+                style: const TextStyle(
+                    color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '상황 태그를 고르면 AI가 코디를 추천해요',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 그날 기록이 여러 건이어도(예: 나중에 다시 기록) 모두 한눈에 보이도록
+    // 옷장 스트림을 구독해 대표 이미지까지 갖춘 카드로 전부 나열한다.
+    return StreamBuilder<List<WardrobeItem>>(
+      stream: FirestoreService.wardrobeStream(),
+      builder: (context, snapshot) {
+        final wardrobeById = {
+          for (final w in snapshot.data ?? const <WardrobeItem>[]) w.id: w,
+        };
+        return Column(
+          children: entries.map((entry) => _entryCard(entry, wardrobeById)).toList(),
+        );
+      },
+    );
+  }
+
+  WardrobeItem? _representativeItem(
+      OutfitCalendarEntry entry, Map<String, WardrobeItem> wardrobeById) {
+    final items = entry.itemIds.map((id) => wardrobeById[id]).whereType<WardrobeItem>().toList();
+    if (items.isEmpty) return null;
+    return items.firstWhere((i) => i.category == '상의', orElse: () => items.first);
+  }
+
+  Widget _entryCard(OutfitCalendarEntry entry, Map<String, WardrobeItem> wardrobeById) {
+    final tag = TpoTags.byLabel(entry.tpoTag);
+    final summary = entry.itemSummaries.isEmpty
+        ? '코디 조합'
+        : entry.itemSummaries.map((s) => s.split(':').first.trim()).join(', ');
+    final representativeItem =
+        entry.fittingImageUrl == null ? _representativeItem(entry, wardrobeById) : null;
+    return GestureDetector(
+      onTap: () => _openRecordSheet(entry.date, existing: entry),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 60,
+                height: 76,
+                child: entry.fittingImageUrl != null
+                    ? CachedNetworkImage(
+                        imageUrl: entry.fittingImageUrl!,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) => Container(color: AppColors.background),
+                        errorWidget: (_, __, ___) => Container(
+                          color: AppColors.background,
+                          child: const Icon(Icons.image_outlined, color: AppColors.textDisabled),
+                        ),
+                      )
+                    : representativeItem != null
+                        ? Container(
+                            color: AppColors.background,
+                            padding: const EdgeInsets.all(4),
+                            child: CachedNetworkImage(
+                              imageUrl:
+                                  representativeItem.cutoutImageUrl ?? representativeItem.imageUrl,
+                              fit: BoxFit.contain,
+                              placeholder: (_, __) => Container(color: AppColors.background),
+                              errorWidget: (_, __, ___) => Container(
+                                color: AppColors.background,
+                                child:
+                                    const Icon(Icons.checkroom, color: AppColors.textDisabled),
+                              ),
+                            ),
+                          )
+                        : Container(
+                            color: AppColors.background,
+                            child: const Icon(Icons.checkroom, color: AppColors.textDisabled),
+                          ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: tag.color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(tag.icon, size: 13, color: tag.color),
+                        const SizedBox(width: 4),
+                        Text(tag.label,
+                            style: TextStyle(
+                                color: tag.color, fontSize: 12, fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(summary,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+                  if (entry.source == OutfitCalendarEntry.sourceAgent) ...[
+                    const SizedBox(height: 4),
+                    const Text('에이전트 추천에서 기록',
+                        style: TextStyle(color: AppColors.blue, fontSize: 11)),
+                  ],
+                ],
+              ),
+            ),
+            GestureDetector(
+              onTap: () => _confirmDelete(entry),
+              child: const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: Icon(Icons.delete_outline, color: AppColors.textDisabled, size: 20),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -259,7 +259,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
       builder: (context, snapshot) {
         final monthEntries = snapshot.data ?? const <OutfitCalendarEntry>[];
         final dayEntries = _entriesForDay(monthEntries, _selectedDay);
-        return Column(
+        // 캘린더/버튼까지 한 화면(단일 스크롤)으로 묶어, 기록 목록을 내려도
+        // 위쪽 버튼에 가려지지 않고 화면 전체가 함께 스크롤되게 한다.
+        // 화면 배경은 흰색으로 통일하고, 그레이 톤은 달력 영역에만 남긴다
+        // (_buildCalendar 참고).
+        return Container(
+          color: Colors.white,
+          child: ListView(
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
@@ -272,23 +278,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         fontWeight: FontWeight.w800)),
               ),
             ),
-            _buildWeeklyPlanButton(),
             _buildCalendar(monthEntries),
+            _buildWeeklyPlanButton(),
             const Divider(height: 1, color: AppColors.divider),
-            Expanded(
-              child: dayEntries.isEmpty
-                  ? _buildEmptyDay()
-                  // 옷장에서 옷을 개별 선택해 기록한 착장은 fittingImageUrl이 없어
-                  // 대표 아이템 썸네일을 만들려면 itemIds → WardrobeItem 매칭이
-                  // 필요하다(_recordedEntryCard 참고).
-                  : StreamBuilder<List<WardrobeItem>>(
-                      stream: FirestoreService.wardrobeStream(),
-                      builder: (context, wardrobeSnapshot) {
-                        final wardrobeById = {
-                          for (final w in wardrobeSnapshot.data ?? const <WardrobeItem>[]) w.id: w,
-                        };
-                        return ListView(
-                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            dayEntries.isEmpty
+                ? _buildEmptyDay()
+                // 옷장에서 옷을 개별 선택해 기록한 착장은 fittingImageUrl이 없어
+                // 대표 아이템 썸네일을 만들려면 itemIds → WardrobeItem 매칭이
+                // 필요하다(_recordedEntryCard 참고).
+                : StreamBuilder<List<WardrobeItem>>(
+                    stream: FirestoreService.wardrobeStream(),
+                    builder: (context, wardrobeSnapshot) {
+                      final wardrobeById = {
+                        for (final w in wardrobeSnapshot.data ?? const <WardrobeItem>[]) w.id: w,
+                      };
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             _dayHeader(),
                             const SizedBox(height: 12),
@@ -299,11 +306,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 ? _scheduleButton(compact: true)
                                 : _addButton(compact: true),
                           ],
-                        );
-                      },
-                    ),
-            ),
+                        ),
+                      );
+                    },
+                  ),
           ],
+          ),
         );
       },
     );
@@ -311,34 +319,31 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _buildWeeklyPlanButton() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
       child: SizedBox(
         width: double.infinity,
         height: 46,
-        child: ElevatedButton.icon(
+        child: ElevatedButton(
           onPressed: _planning ? null : _runWeeklyPlan,
-          icon: _planning
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-              : const Icon(Icons.auto_awesome, size: 18, color: Colors.white),
-          label: Text(_planning ? '플랜 짜는 중...' : '이번 주 코디 플랜 받기',
-              style: const TextStyle(
-                  color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.navy,
             disabledBackgroundColor: AppColors.navy.withValues(alpha: 0.6),
             elevation: 0,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
+          child: Text(_planning ? '플랜 짜는 중...' : '이번 주 코디 플랜 받기',
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
         ),
       ),
     );
   }
 
   Widget _buildCalendar(List<OutfitCalendarEntry> monthEntries) {
-    return TableCalendar<OutfitCalendarEntry>(
+    return Container(
+      color: AppColors.background,
+      padding: const EdgeInsets.only(bottom: 8),
+      child: TableCalendar<OutfitCalendarEntry>(
       firstDay: DateTime.utc(2020, 1, 1),
       lastDay: DateTime.utc(2035, 12, 31),
       focusedDay: _focusedDay,
@@ -354,23 +359,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ),
       calendarStyle: CalendarStyle(
         todayDecoration: BoxDecoration(
-          color: AppColors.blue.withValues(alpha: 0.15),
+          color: Colors.black.withValues(alpha: 0.15),
           shape: BoxShape.circle,
         ),
-        todayTextStyle: const TextStyle(color: AppColors.blue, fontWeight: FontWeight.w700),
+        todayTextStyle: const TextStyle(color: Colors.black, fontWeight: FontWeight.w700),
         selectedDecoration: const BoxDecoration(
-          color: AppColors.blue,
+          color: Colors.black,
           shape: BoxShape.circle,
         ),
-        markerDecoration: const BoxDecoration(
-          color: AppColors.teal,
-          shape: BoxShape.circle,
-        ),
-        markersMaxCount: 1,
+        markersMaxCount: 0,
         outsideDaysVisible: false,
       ),
       selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-      eventLoader: (day) => _entriesForDay(monthEntries, day),
       onDaySelected: (selectedDay, focusedDay) {
         setState(() {
           _selectedDay = OutfitCalendarEntry.normalizeDate(selectedDay);
@@ -381,6 +381,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         // 월 이동 → 해당 월 스트림으로 재구독.
         setState(() => _focusedDay = focusedDay);
       },
+      ),
     );
   }
 
@@ -394,41 +395,34 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _buildEmptyDay() {
     final future = _isFuture(_selectedDay);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(future ? Icons.event_outlined : Icons.checkroom_outlined,
-                      color: AppColors.textDisabled, size: 40),
-                  const SizedBox(height: 12),
-                  Text(
-                      future
-                          ? '${_selectedDay.month}월 ${_selectedDay.day}일 일정을 등록해보세요'
-                          : '${_selectedDay.month}월 ${_selectedDay.day}일 기록이 없어요',
-                      style: const TextStyle(
-                          color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 6),
-                  Text(
-                      future
-                          ? 'TPO 태그를 남기면 에이전트가 코디를 미리 준비해요'
-                          : '오늘 입은 착장을 기록해보세요',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
-                  const SizedBox(height: 16),
-                  // 미래 날짜엔 "일정 태그 등록"을, 오늘/과거엔 "착장 기록하기"를 제공.
-                  future ? _scheduleButton(compact: false) : _addButton(compact: false),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(future ? Icons.event_outlined : Icons.checkroom_outlined,
+                color: AppColors.textDisabled, size: 40),
+            const SizedBox(height: 12),
+            Text(
+                future
+                    ? '${_selectedDay.month}월 ${_selectedDay.day}일 일정을 등록해보세요'
+                    : '${_selectedDay.month}월 ${_selectedDay.day}일 기록이 없어요',
+                style: const TextStyle(
+                    color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(
+                future
+                    ? 'TPO 태그를 남기면 에이전트가 코디를 미리 준비해요'
+                    : '오늘 입은 착장을 기록해보세요',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+            const SizedBox(height: 16),
+            // 미래 날짜엔 "일정 태그 등록"을, 오늘/과거엔 "착장 기록하기"를 제공.
+            future ? _scheduleButton(compact: false) : _addButton(compact: false),
+          ],
+        ),
+      ),
     );
   }
 
@@ -438,11 +432,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
       height: 46,
       child: OutlinedButton.icon(
         onPressed: _openRecordSheet,
-        icon: const Icon(Icons.add, size: 18, color: AppColors.blue),
+        icon: const Icon(Icons.add, size: 18, color: Colors.black),
         label: const Text('착장 기록하기',
-            style: TextStyle(color: AppColors.blue, fontSize: 14, fontWeight: FontWeight.w700)),
+            style: TextStyle(color: Colors.black, fontSize: 14, fontWeight: FontWeight.w700)),
         style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: AppColors.blue),
+          side: const BorderSide(color: Colors.black),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
@@ -686,12 +680,12 @@ class _PlannedEntryCardState extends State<_PlannedEntryCard> {
                       height: 40,
                       child: OutlinedButton.icon(
                         onPressed: widget.onRecordManually,
-                        icon: const Icon(Icons.checkroom_outlined, size: 16, color: AppColors.blue),
+                        icon: const Icon(Icons.add, size: 16, color: Colors.black),
                         label: const Text('이 날 착장 기록하기',
                             style: TextStyle(
-                                color: AppColors.blue, fontSize: 13, fontWeight: FontWeight.w700)),
+                                color: Colors.black, fontSize: 13, fontWeight: FontWeight.w700)),
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: AppColors.blue),
+                          side: const BorderSide(color: Colors.black),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                       ),

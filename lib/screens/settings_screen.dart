@@ -122,19 +122,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: _bodyInfoSummary(),
                   onTap: _openBodyProfile,
                 ),
+                const SizedBox(height: 12),
+                // ── AI 비서 활동 내역 카드 ──
+                _MyPageCard(
+                  title: 'AI 비서 활동 내역',
+                  subtitle: '에이전트가 한 일 타임라인',
+                  icon: Icons.smart_toy_outlined,
+                  onTap: _openAgentLog,
+                ),
                 const SizedBox(height: 28),
                 const _SectionLabel('설정'),
                 _SettingsRow(label: '내 스크랩', onTap: _openScraps),
                 _SettingsRow(
-                  label: 'AI 비서 활동 내역',
-                  sub: '에이전트가 한 일 타임라인',
-                  onTap: _openAgentLog,
-                ),
-                _SettingsRow(
                   label: '푸시 알림',
                   trailing: Switch.adaptive(
                     value: _pushEnabled,
-                    activeColor: Colors.black,
+                    activeThumbColor: Colors.black,
                     onChanged: (v) => setState(() => _pushEnabled = v),
                   ),
                 ),
@@ -142,7 +145,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   label: '마케팅 정보 수신',
                   trailing: Switch.adaptive(
                     value: _marketingEnabled,
-                    activeColor: Colors.black,
+                    activeThumbColor: Colors.black,
                     onChanged: (v) => setState(() => _marketingEnabled = v),
                   ),
                 ),
@@ -178,8 +181,14 @@ class _MyPageCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final IconData? icon; // 없으면 기본 "DOT" 뱃지, 있으면 해당 아이콘을 뱃지로 사용
 
-  const _MyPageCard({required this.title, required this.subtitle, required this.onTap});
+  const _MyPageCard({
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.icon,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -201,15 +210,17 @@ class _MyPageCard extends StatelessWidget {
                 color: Colors.black,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Text(
-                'DOT',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.3,
-                ),
-              ),
+              child: icon != null
+                  ? Icon(icon, color: Colors.white, size: 20)
+                  : const Text(
+                      'DOT',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
             ),
             const SizedBox(width: 12),
             Expanded(

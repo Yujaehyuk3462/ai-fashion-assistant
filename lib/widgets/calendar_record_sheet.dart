@@ -518,7 +518,7 @@ class _CalendarRecordSheetState extends State<_CalendarRecordSheet> {
         child: ElevatedButton(
           onPressed: _canSave && !_saving ? () => _save(wardrobe) : null,
           style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.blue,
+            backgroundColor: Colors.black,
             disabledBackgroundColor: AppColors.border,
             elevation: 0,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
