@@ -207,7 +207,7 @@ class _OutfitBoardState extends State<OutfitBoard> {
 
   void _pickForSlot(String slotKey) {
     final slot = outfitBoardSlots.firstWhere((s) => s.key == slotKey);
-    showModalBottomSheet<WardrobeItem>(
+    showModalBottomSheet<_PickResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -215,10 +215,14 @@ class _OutfitBoardState extends State<OutfitBoard> {
         category: slot.category,
         subCategory: slot.subCategory,
         slotLabel: slot.label,
+        canClear: widget.slots[slotKey] != null,
       ),
-    ).then((selected) {
-      if (selected != null && mounted) {
-        widget.onSetItem(slotKey, selected);
+    ).then((result) {
+      if (result == null || !mounted) return;
+      if (result.clear) {
+        widget.onClearItem?.call(slotKey);
+      } else if (result.item != null) {
+        widget.onSetItem(slotKey, result.item!);
       }
     });
   }
@@ -496,15 +500,30 @@ class _DashedBorderPainter extends CustomPainter {
 }
 
 // ── 슬롯 탭 시 뜨는 가로 스크롤 아이템 선택 바텀시트 ─────
+// 슬롯 선택 시트의 결과 — 아이템을 골랐는지, "비우기"를 눌렀는지, 그냥
+// 닫았는지(둘 다 null)를 구분한다. WardrobeItem?만으로는 "비우기"와
+// "그냥 닫음"을 구분할 수 없어서 별도로 감싼다.
+class _PickResult {
+  final WardrobeItem? item;
+  final bool clear;
+
+  const _PickResult.selected(WardrobeItem this.item) : clear = false;
+  const _PickResult.cleared()
+      : item = null,
+        clear = true;
+}
+
 class _BoardItemPickerSheet extends StatelessWidget {
   final String category;
   final String? subCategory;
   final String slotLabel;
+  final bool canClear;
 
   const _BoardItemPickerSheet({
     required this.category,
     required this.subCategory,
     required this.slotLabel,
+    required this.canClear,
   });
 
   @override
@@ -536,15 +555,53 @@ class _BoardItemPickerSheet extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Text('$slotLabel 선택',
-                      style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: -0.4)),
-                  const SizedBox(height: 4),
-                  Text('등록된 $category 아이템 중에서 골라보세요',
-                      style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('$slotLabel 선택',
+                                style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: -0.4)),
+                            const SizedBox(height: 4),
+                            Text('등록된 $category 아이템 중에서 골라보세요',
+                                style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                          ],
+                        ),
+                      ),
+                      if (canClear)
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context, const _PickResult.cleared()),
+                          child: Container(
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: AppColors.red.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: AppColors.red.withValues(alpha: 0.3)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.remove_circle_outline,
+                                    size: 15, color: AppColors.red),
+                                const SizedBox(width: 4),
+                                const Text('이 슬롯 비우기',
+                                    style: TextStyle(
+                                        color: AppColors.red,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700)),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -586,7 +643,7 @@ class _BoardItemPickerSheet extends StatelessWidget {
                     itemBuilder: (context, i) {
                       final item = items[i];
                       return GestureDetector(
-                        onTap: () => Navigator.pop(context, item),
+                        onTap: () => Navigator.pop(context, _PickResult.selected(item)),
                         child: Container(
                           width: 110,
                           decoration: BoxDecoration(

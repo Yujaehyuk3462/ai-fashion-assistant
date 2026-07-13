@@ -267,24 +267,52 @@ class AgentPlanner {
     ));
   }
 
+  // 캘린더 기록과 대조할 추천을 찾을 때 허용하는 날짜 오차. 정확히 같은
+  // 날짜만 대상으로 하면 "일정 등록"(레벨 1) 없이 쌓이는 일반 추천은
+  // 거의 매칭되지 않으므로, 등록일 전후 며칠까지 넓혀서 잡는다.
+  static const _feedbackMatchWindowDays = 3;
+
+  // 추천-기록 간 자카드 유사도가 이 값 이상이면 accepted, 미만이면
+  // rejected_with_alternative. 60% ≈ 4벌 중 3벌 이상 겹침.
+  static const _acceptSimilarityThreshold = 0.6;
+
   // ── 레벨 3: 피드백 감지 (캘린더 착장 기록 시 호출) ──────────
-  // 같은 날짜+TPO의 선제 추천이 있었는지 보고, 사용자가 저장한 조합이
-  // 추천과 같으면 accepted, 다르면 rejected_with_alternative로 기록한다.
+  // targetDate ± _feedbackMatchWindowDays 범위의 추천 중, 태그가 같은 것이
+  // 있으면 그것만, 없으면(일반 추천 등 태그 없는 것 포함) 범위 전체를
+  // 후보로 삼아 날짜가 가장 가까운 하나를 고른다. 사용자가 저장한 조합이
+  // 그 추천과 같으면 accepted, 다르면 rejected_with_alternative로 기록한다.
   // 이 불일치가 다음 추천 프롬프트에 취향 피드백으로 주입된다.
   static Future<void> detectFeedbackForCalendarEntry(
       String uid, OutfitCalendarEntry entry) async {
     try {
       if (entry.isPlanned || entry.itemIds.isEmpty) return; // 예정/빈 기록은 대상 아님
-      final recs = await FirestoreService.recommendationsForDateSilently(uid, entry.date);
-      final matching = recs.where((r) => r.targetTpoTag == entry.tpoTag).toList()
-        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      if (matching.isEmpty) return;
-      final rec = matching.first;
-      if (rec.userChoice != null) return; // 이미 반응이 기록됨
+      final recs = await FirestoreService.recommendationsInDateRangeSilently(
+          uid, entry.date, _feedbackMatchWindowDays);
+      final unresponded =
+          recs.where((r) => r.userChoice == null && r.targetDate != null).toList();
+      if (unresponded.isEmpty) return;
 
+      final tagMatches = unresponded.where((r) => r.targetTpoTag == entry.tpoTag).toList();
+      final pool = tagMatches.isNotEmpty ? tagMatches : unresponded;
+      pool.sort((a, b) => a.targetDate!
+          .difference(entry.date)
+          .abs()
+          .compareTo(b.targetDate!.difference(entry.date).abs()));
+      final rec = pool.first;
+
+      // 완전 일치를 요구하면 3~4벌 조합을 하나라도 다르게 고른 순간 전부
+      // rejected가 되어 채택률이 비현실적으로 낮아진다. 자카드 유사도
+      // (교집합/합집합)로 "참고해서 비슷하게 입었는지"를 판정한다.
       final recSet = rec.itemIds.toSet();
       final chosenSet = entry.itemIds.toSet();
-      final accepted = recSet.length == chosenSet.length && recSet.containsAll(chosenSet);
+      final intersection = recSet.intersection(chosenSet);
+      final union = recSet.union(chosenSet);
+      final similarity = union.isEmpty ? 0.0 : intersection.length / union.length;
+      final accepted = similarity >= _acceptSimilarityThreshold;
+      debugPrint('[FEEDBACK] rec=${rec.id} recItems=$recSet chosenItems=$chosenSet '
+          '교집합=${intersection.length} 합집합=${union.length} '
+          '유사도=${similarity.toStringAsFixed(2)} 임계값=$_acceptSimilarityThreshold '
+          '→ ${accepted ? "accepted" : "rejected"}');
       if (accepted) {
         await FirestoreService.updateRecommendationFeedbackSilently(uid, rec.id,
             userChoice: RecommendationEntry.choiceAccepted);
@@ -584,6 +612,10 @@ class AgentPlanner {
         candidateScores: outcome.candidateScores,
         repairAttempted: outcome.repairAttempted,
         repairNote: outcome.repairNote,
+        // 일정 기반 선제 추천이 아니라도 등록일 기준 targetDate를 채워
+        // 채택률 집계(AgentStats) 대상에 포함시킨다. targetTpoTag는 비워두면
+        // '일반' 태그로 잡힌다(agent_stats.dart forTag 참고).
+        targetDate: DateTime.now(),
       );
 
       debugPrint('[RECOMMEND] Firestore 저장 시도...');

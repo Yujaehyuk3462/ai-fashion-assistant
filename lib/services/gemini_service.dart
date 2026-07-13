@@ -37,6 +37,10 @@ class GeminiService {
     } on GeminiApiException catch (e) {
       if (!e.isRetryable) rethrow;
       return await action(textModelFallback);
+    } on FormatException {
+      // 1차 모델이 JSON을 다 못 쓰고 잘리는 경우(_parseJsonObject 참고)도
+      // 같은 모델로 재시도해봤자 또 잘릴 수 있으므로 대체 모델로 넘긴다.
+      return await action(textModelFallback);
     }
   }
 
@@ -115,12 +119,11 @@ class GeminiService {
       'contents': [{'parts': parts}],
       'generationConfig': {
         'temperature': 0.2,
-        'maxOutputTokens': 500,
+        // thinkingBudget:0으로 추론 단계를 없앴는데도 tags 배열까지 채운
+        // 실측 응답이 500 경계에서 닫는 '}' 직전에 잘리는 사례가 확인돼
+        // 800으로 여유를 늘렸다.
+        'maxOutputTokens': 800,
         'responseMimeType': 'application/json',
-        // 실측 결과 thinking(추론) 단계가 maxOutputTokens 예산을 거의 다
-        // 먹어버려서(예: 478/500) 실제 JSON은 "{" 한두 글자만 쓰고 잘리는
-        // 경우가 반복 확인됐다. 색상/스타일 분류는 추론이 필요 없는 단순
-        // 작업이라 thinking budget을 0으로 꺼서 근본적으로 방지한다.
         'thinkingConfig': {'thinkingBudget': 0},
       },
     });
@@ -164,7 +167,8 @@ class GeminiService {
       'contents': [{'parts': parts}],
       'generationConfig': {
         'temperature': 0.1,
-        'maxOutputTokens': 500,
+        // extractAttributes와 동일한 이유(500 경계 잘림 확인)로 800으로 늘림.
+        'maxOutputTokens': 800,
         'responseMimeType': 'application/json',
         // extractAttributes와 동일한 이유로 thinking을 꺼서 예산이
         // JSON 출력 전에 잘려나가는 것을 방지한다.

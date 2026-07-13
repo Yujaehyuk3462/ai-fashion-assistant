@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -7,6 +8,7 @@ import '../models/wardrobe_item.dart';
 import '../services/agent_activity.dart';
 import '../services/firestore_service.dart';
 import '../services/weather_service.dart';
+import '../widgets/calendar_record_sheet.dart';
 
 // ── 홈 화면: "DOT." 레퍼런스 디자인에 맞춰 단순화한 버전.
 // 인사/날씨 히어로, 액션 그리드, 최근 착장 레일, AI 팁 배너를 하나의
@@ -208,7 +210,7 @@ class _RecommendationCard extends StatelessWidget {
               return _RecommendationCardBody(
                 key: ValueKey(entry.id),
                 entry: entry,
-                heroImageUrl: matchedItems.first.cutoutImageUrl ?? matchedItems.first.imageUrl,
+                matchedItems: matchedItems,
                 onTap: () => onOpenFittingRoom(matchedItems),
               );
             },
@@ -248,22 +250,74 @@ class _RecommendationCard extends StatelessWidget {
   }
 }
 
-class _RecommendationCardBody extends StatelessWidget {
+class _RecommendationCardBody extends StatefulWidget {
   final RecommendationEntry entry;
-  final String heroImageUrl;
+  final List<WardrobeItem> matchedItems;
   final VoidCallback onTap;
 
   const _RecommendationCardBody({
     super.key,
     required this.entry,
-    required this.heroImageUrl,
+    required this.matchedItems,
     required this.onTap,
   });
 
   @override
+  State<_RecommendationCardBody> createState() => _RecommendationCardBodyState();
+}
+
+class _RecommendationCardBodyState extends State<_RecommendationCardBody> {
+  final _pageController = PageController();
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.matchedItems.length > 1) {
+      _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (!_pageController.hasClients) return;
+        final next = ((_pageController.page ?? 0).round() + 1) % widget.matchedItems.length;
+        _pageController.animateToPage(next,
+            duration: const Duration(milliseconds: 450), curve: Curves.easeInOut);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  // 추천 조합을 그대로 캘린더 착장 기록 시트에 프리필해서 연다 — 사용자가
+  // 조합을 외워서 옷장에서 하나씩 다시 고르지 않아도 되게 한다(scrap_screen의
+  // "캘린더에 기록"과 동일한 패턴).
+  Future<void> _recordToCalendar(BuildContext context) async {
+    final first = widget.matchedItems.first;
+    final saved = await showCalendarRecordSheet(
+      context,
+      date: widget.entry.targetDate ?? DateTime.now(),
+      prefillImageUrl: first.cutoutImageUrl ?? first.imageUrl,
+      prefillItemIds: widget.entry.itemIds,
+      prefillItemSummaries: widget.entry.itemSummaries,
+      recommendationId: widget.entry.id,
+    );
+    if (saved == true && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('캘린더에 착장을 기록했어요'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.blue,
+      ));
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final items = widget.matchedItems;
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: Column(
@@ -271,11 +325,49 @@ class _RecommendationCardBody extends StatelessWidget {
           children: [
             AspectRatio(
               aspectRatio: 4 / 5,
-              child: CachedNetworkImage(
-                imageUrl: heroImageUrl,
-                fit: BoxFit.cover,
-                placeholder: (_, __) => Container(color: AppColors.background),
-                errorWidget: (_, __, ___) => Container(color: AppColors.background),
+              child: Container(
+                color: AppColors.background,
+                child: items.length <= 1
+                    ? _RecommendationItemImage(item: items.first)
+                    : Stack(
+                        alignment: Alignment.bottomCenter,
+                        children: [
+                          PageView.builder(
+                            controller: _pageController,
+                            itemCount: items.length,
+                            itemBuilder: (context, i) =>
+                                _RecommendationItemImage(item: items[i]),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (var i = 0; i < items.length; i++)
+                                  AnimatedBuilder(
+                                    animation: _pageController,
+                                    builder: (context, _) {
+                                      final page = _pageController.hasClients
+                                          ? (_pageController.page ?? 0).round()
+                                          : 0;
+                                      return Container(
+                                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                                        width: 6,
+                                        height: 6,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: page == i
+                                              ? Colors.white
+                                              : Colors.white.withValues(alpha: 0.4),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
               ),
             ),
             Container(
@@ -315,11 +407,49 @@ class _RecommendationCardBody extends StatelessWidget {
                       style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.5),
                     ),
                   ],
+                  const SizedBox(height: 10),
+                  GestureDetector(
+                    onTap: () => _recordToCalendar(context),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.event_available_outlined,
+                            color: AppColors.blue, size: 15),
+                        const SizedBox(width: 6),
+                        const Text('캘린더에 기록',
+                            style: TextStyle(
+                                color: AppColors.blue,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// 추천 조합 슬라이드 한 장 — 배경 제거본이 있으면 우선 사용.
+class _RecommendationItemImage extends StatelessWidget {
+  final WardrobeItem item;
+
+  const _RecommendationItemImage({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: CachedNetworkImage(
+        imageUrl: item.cutoutImageUrl ?? item.imageUrl,
+        fit: BoxFit.contain,
+        placeholder: (_, __) => const SizedBox.shrink(),
+        errorWidget: (_, __, ___) =>
+            const Icon(Icons.image_not_supported_outlined, color: AppColors.textDisabled),
       ),
     );
   }

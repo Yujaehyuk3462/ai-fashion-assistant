@@ -24,6 +24,12 @@ Future<bool?> showCalendarRecordSheet(
   List<String> prefillItemIds = const [],
   List<String> prefillItemSummaries = const [],
   String? recommendationId,
+  // 예정(planned) 일정을 기록으로 전환할 때만 채운다. 있으면 새 문서를
+  // 만드는 대신 이 id의 문서를 recorded로 업데이트한다.
+  String? existingEntryId,
+  // 예정 일정은 이미 TPO 태그가 정해져 있으므로 다시 고르지 않아도 되게
+  // 미리 선택해둔다(그래도 바꾸고 싶으면 바꿀 수 있음).
+  String? initialTpoTag,
 }) {
   return showModalBottomSheet<bool>(
     context: context,
@@ -38,6 +44,8 @@ Future<bool?> showCalendarRecordSheet(
       prefillItemIds: prefillItemIds,
       prefillItemSummaries: prefillItemSummaries,
       recommendationId: recommendationId,
+      existingEntryId: existingEntryId,
+      initialTpoTag: initialTpoTag,
     ),
   );
 }
@@ -48,6 +56,8 @@ class _CalendarRecordSheet extends StatefulWidget {
   final List<String> prefillItemIds;
   final List<String> prefillItemSummaries;
   final String? recommendationId;
+  final String? existingEntryId;
+  final String? initialTpoTag;
 
   const _CalendarRecordSheet({
     required this.date,
@@ -55,6 +65,8 @@ class _CalendarRecordSheet extends StatefulWidget {
     this.prefillItemIds = const [],
     this.prefillItemSummaries = const [],
     this.recommendationId,
+    this.existingEntryId,
+    this.initialTpoTag,
   });
 
   @override
@@ -63,7 +75,7 @@ class _CalendarRecordSheet extends StatefulWidget {
 
 // 착장 소스: 최근 피팅 결과 하나를 고른 상태 vs 옷장에서 직접 고른 상태.
 class _CalendarRecordSheetState extends State<_CalendarRecordSheet> {
-  String _tpo = TpoTags.labels.last; // 기본값 '일상'
+  late String _tpo;
   bool _saving = false;
 
   // 최근 피팅에서 선택된 항목(있으면 옷장 선택보다 우선).
@@ -78,6 +90,7 @@ class _CalendarRecordSheetState extends State<_CalendarRecordSheet> {
   @override
   void initState() {
     super.initState();
+    _tpo = widget.initialTpoTag ?? TpoTags.labels.last;
     _prefillImageUrl = widget.prefillImageUrl;
     if (widget.prefillItemIds.isNotEmpty) {
       _selectedItemIds.addAll(widget.prefillItemIds);
@@ -138,22 +151,40 @@ class _CalendarRecordSheetState extends State<_CalendarRecordSheet> {
           picked.map((i) => '${i.category}: ${i.attributes?.color ?? ''}'.trim()).toList();
     }
 
+    final source = widget.recommendationId != null
+        ? OutfitCalendarEntry.sourceAgent
+        : OutfitCalendarEntry.sourceManual;
     final entry = OutfitCalendarEntry(
-      id: '',
+      id: widget.existingEntryId ?? '',
       date: widget.date,
       tpoTag: _tpo,
       fittingImageUrl: imageUrl,
       itemIds: itemIds,
       itemSummaries: itemSummaries,
-      source: widget.recommendationId != null
-          ? OutfitCalendarEntry.sourceAgent
-          : OutfitCalendarEntry.sourceManual,
+      source: source,
       recommendationId: widget.recommendationId,
+      status: OutfitCalendarEntry.statusRecorded,
       createdAt: DateTime.now(),
     );
 
     try {
-      final docId = await FirestoreService.addCalendarEntry(uid, entry);
+      String docId;
+      if (widget.existingEntryId != null) {
+        // 예정 → 기록 전환: 새 문서 대신 기존 예정 문서를 업데이트한다.
+        await FirestoreService.updateCalendarEntry(
+          uid,
+          widget.existingEntryId!,
+          status: OutfitCalendarEntry.statusRecorded,
+          fittingImageUrl: imageUrl,
+          itemIds: itemIds,
+          itemSummaries: itemSummaries,
+          source: source,
+          recommendationId: widget.recommendationId,
+        );
+        docId = widget.existingEntryId!;
+      } else {
+        docId = await FirestoreService.addCalendarEntry(uid, entry);
+      }
       // 활동 로그: 착장 기록은 취향 학습의 재료라 에이전트 서사에도 남긴다.
       unawaited(FirestoreService.addAgentLogSilently(
         uid,

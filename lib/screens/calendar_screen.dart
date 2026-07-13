@@ -7,6 +7,8 @@ import '../constants/app_colors.dart';
 import '../constants/tpo_tags.dart';
 import '../models/agent_log_entry.dart';
 import '../models/outfit_calendar_entry.dart';
+import '../models/recommendation_entry.dart';
+import '../models/wardrobe_item.dart';
 import '../services/agent_planner.dart';
 import '../services/firestore_service.dart';
 import '../widgets/calendar_record_sheet.dart';
@@ -170,6 +172,80 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
   }
 
+  // 예정(planned) 일정 하나에 에이전트가 이미 준비해둔 선제 추천이 있는지
+  // 확인한다. targetDate는 정확히 그 날짜로 만들어지므로(agent_planner.dart의
+  // _prepareRecommendationFor) windowDays=0(정확히 그 날) 범위 조회를 재사용하고,
+  // 태그 일치·아직 반응 없음만 클라이언트에서 거른다. 새 복합 인덱스 불필요.
+  Future<RecommendationEntry?> _matchingRecommendationFor(OutfitCalendarEntry planned) async {
+    final uid = _uid;
+    if (uid == null) return null;
+    final recs = await FirestoreService.recommendationsInDateRangeSilently(uid, planned.date, 0);
+    final matches = recs
+        .where((r) => r.targetTpoTag == planned.tpoTag && r.userChoice == null)
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return matches.isEmpty ? null : matches.first;
+  }
+
+  // 예정 일정을 착장 기록으로 전환 — 같은 문서를 업데이트한다(TPO는 이미
+  // 있으니 시트에 미리 채워서 다시 고르지 않아도 되게 한다).
+  Future<void> _recordForPlannedEntry(OutfitCalendarEntry planned) async {
+    await showCalendarRecordSheet(
+      context,
+      date: planned.date,
+      existingEntryId: planned.id,
+      initialTpoTag: planned.tpoTag,
+    );
+  }
+
+  // "이 코디로 확정" — 에이전트가 준비한 추천 그대로 같은 문서를 기록으로
+  // 전환한다. itemIds가 추천과 100% 동일하므로 detectFeedbackForCalendarEntry가
+  // 자동으로 accepted 처리한다(별도 로직 불필요, 기존 학습 파이프라인 재사용).
+  Future<void> _confirmAgentRecommendation(
+    OutfitCalendarEntry planned,
+    RecommendationEntry rec,
+  ) async {
+    final uid = _uid;
+    if (uid == null) return;
+    try {
+      await FirestoreService.updateCalendarEntry(
+        uid,
+        planned.id,
+        status: OutfitCalendarEntry.statusRecorded,
+        itemIds: rec.itemIds,
+        itemSummaries: rec.itemSummaries,
+        source: OutfitCalendarEntry.sourceAgent,
+        recommendationId: rec.id,
+      );
+      final updated = OutfitCalendarEntry(
+        id: planned.id,
+        date: planned.date,
+        tpoTag: planned.tpoTag,
+        itemIds: rec.itemIds,
+        itemSummaries: rec.itemSummaries,
+        source: OutfitCalendarEntry.sourceAgent,
+        recommendationId: rec.id,
+        status: OutfitCalendarEntry.statusRecorded,
+        createdAt: planned.createdAt,
+      );
+      unawaited(FirestoreService.addAgentLogSilently(
+        uid,
+        AgentLogEntry(
+          id: '',
+          eventType: AgentLogEntry.typeCalendarLogged,
+          message:
+              '${planned.date.month}/${planned.date.day} [${planned.tpoTag}] 에이전트가 준비한 코디를 그대로 기록했습니다',
+          relatedDocId: rec.id,
+        ),
+      ));
+      unawaited(AgentPlanner.detectFeedbackForCalendarEntry(uid, updated));
+      unawaited(FirestoreService.dismissRecommendation(uid, rec.id));
+      _showSnack('${planned.date.month}/${planned.date.day} 코디를 확정했어요');
+    } catch (e) {
+      _showSnack('확정 실패: $e', isError: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final uid = _uid;
@@ -202,18 +278,29 @@ class _CalendarScreenState extends State<CalendarScreen> {
             Expanded(
               child: dayEntries.isEmpty
                   ? _buildEmptyDay()
-                  : ListView(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                      children: [
-                        _dayHeader(),
-                        const SizedBox(height: 12),
-                        ...dayEntries.map(_entryCard),
-                        const SizedBox(height: 12),
-                        // 미래 날짜엔 일정 태그를 더 등록, 오늘/과거엔 착장 기록.
-                        _isFuture(_selectedDay)
-                            ? _scheduleButton(compact: true)
-                            : _addButton(compact: true),
-                      ],
+                  // 옷장에서 옷을 개별 선택해 기록한 착장은 fittingImageUrl이 없어
+                  // 대표 아이템 썸네일을 만들려면 itemIds → WardrobeItem 매칭이
+                  // 필요하다(_recordedEntryCard 참고).
+                  : StreamBuilder<List<WardrobeItem>>(
+                      stream: FirestoreService.wardrobeStream(),
+                      builder: (context, wardrobeSnapshot) {
+                        final wardrobeById = {
+                          for (final w in wardrobeSnapshot.data ?? const <WardrobeItem>[]) w.id: w,
+                        };
+                        return ListView(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                          children: [
+                            _dayHeader(),
+                            const SizedBox(height: 12),
+                            ...dayEntries.map((e) => _buildEntryCard(e, wardrobeById)),
+                            const SizedBox(height: 12),
+                            // 미래 날짜엔 일정 태그를 더 등록, 오늘/과거엔 착장 기록.
+                            _isFuture(_selectedDay)
+                                ? _scheduleButton(compact: true)
+                                : _addButton(compact: true),
+                          ],
+                        );
+                      },
                     ),
             ),
           ],
@@ -379,15 +466,38 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _entryCard(OutfitCalendarEntry entry) {
+  // 예정 일정은 별도 위젯(_PlannedEntryCard)이 에이전트 추천 여부를 비동기로
+  // 확인해서 보여주므로 여기서는 분기만 한다.
+  Widget _buildEntryCard(OutfitCalendarEntry entry, Map<String, WardrobeItem> wardrobeById) {
+    if (entry.isPlanned) {
+      return _PlannedEntryCard(
+        entry: entry,
+        fetchRecommendation: () => _matchingRecommendationFor(entry),
+        onConfirmRecommendation: (rec) => _confirmAgentRecommendation(entry, rec),
+        onRecordManually: () => _recordForPlannedEntry(entry),
+        onDelete: () => _confirmDelete(entry),
+      );
+    }
+    return _recordedEntryCard(entry, wardrobeById);
+  }
+
+  // 착장 썸네일 우선순위: (1) 전신 가상 피팅 사진 (2) 옷장에서 개별 선택한
+  // 아이템 중 대표 1벌(상의 우선, 없으면 첫 아이템)의 컷아웃/원본 이미지
+  // (3) 아무것도 못 찾으면 옷걸이 아이콘.
+  WardrobeItem? _representativeItem(
+      OutfitCalendarEntry entry, Map<String, WardrobeItem> wardrobeById) {
+    final items = entry.itemIds.map((id) => wardrobeById[id]).whereType<WardrobeItem>().toList();
+    if (items.isEmpty) return null;
+    return items.firstWhere((i) => i.category == '상의', orElse: () => items.first);
+  }
+
+  Widget _recordedEntryCard(OutfitCalendarEntry entry, Map<String, WardrobeItem> wardrobeById) {
     final tag = TpoTags.byLabel(entry.tpoTag);
-    // 예정(태그만 등록된 미래 일정)은 착장 기록과 다르게 표시한다.
-    final planned = entry.isPlanned;
-    final summary = planned
-        ? '에이전트가 코디를 준비할 예정이에요'
-        : (entry.itemSummaries.isEmpty
-            ? '코디 조합'
-            : entry.itemSummaries.map((s) => s.split(':').first.trim()).join(', '));
+    final summary = entry.itemSummaries.isEmpty
+        ? '코디 조합'
+        : entry.itemSummaries.map((s) => s.split(':').first.trim()).join(', ');
+    final representativeItem =
+        entry.fittingImageUrl == null ? _representativeItem(entry, wardrobeById) : null;
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
@@ -413,11 +523,26 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         child: const Icon(Icons.image_outlined, color: AppColors.textDisabled),
                       ),
                     )
-                  : Container(
-                      color: AppColors.background,
-                      child: Icon(planned ? Icons.event_note : Icons.checkroom,
-                          color: AppColors.textDisabled),
-                    ),
+                  : representativeItem != null
+                      ? Container(
+                          color: AppColors.background,
+                          padding: const EdgeInsets.all(4),
+                          child: CachedNetworkImage(
+                            imageUrl:
+                                representativeItem.cutoutImageUrl ?? representativeItem.imageUrl,
+                            fit: BoxFit.contain,
+                            placeholder: (_, __) => Container(color: AppColors.background),
+                            errorWidget: (_, __, ___) => Container(
+                              color: AppColors.background,
+                              child:
+                                  const Icon(Icons.checkroom, color: AppColors.textDisabled),
+                            ),
+                          ),
+                        )
+                      : Container(
+                          color: AppColors.background,
+                          child: const Icon(Icons.checkroom, color: AppColors.textDisabled),
+                        ),
             ),
           ),
           const SizedBox(width: 12),
@@ -447,11 +572,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-                if (planned) ...[
-                  const SizedBox(height: 4),
-                  const Text('예정 일정',
-                      style: TextStyle(color: AppColors.navy, fontSize: 11, fontWeight: FontWeight.w600)),
-                ] else if (entry.source == OutfitCalendarEntry.sourceAgent) ...[
+                if (entry.source == OutfitCalendarEntry.sourceAgent) ...[
                   const SizedBox(height: 4),
                   const Text('에이전트 추천에서 기록',
                       style: TextStyle(color: AppColors.blue, fontSize: 11)),
@@ -465,6 +586,183 @@ class _CalendarScreenState extends State<CalendarScreen> {
               padding: EdgeInsets.only(left: 8),
               child: Icon(Icons.delete_outline, color: AppColors.textDisabled, size: 20),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 예정(planned) 일정 카드 — 에이전트가 그 날짜/TPO를 위해 이미 준비해둔
+// 선제 추천이 있는지 비동기로 확인해서, 있으면 미리보기+확정 버튼을,
+// 없으면 기존처럼 착장 기록하기 버튼만 보여준다.
+class _PlannedEntryCard extends StatefulWidget {
+  final OutfitCalendarEntry entry;
+  final Future<RecommendationEntry?> Function() fetchRecommendation;
+  final ValueChanged<RecommendationEntry> onConfirmRecommendation;
+  final VoidCallback onRecordManually;
+  final VoidCallback onDelete;
+
+  const _PlannedEntryCard({
+    required this.entry,
+    required this.fetchRecommendation,
+    required this.onConfirmRecommendation,
+    required this.onRecordManually,
+    required this.onDelete,
+  });
+
+  @override
+  State<_PlannedEntryCard> createState() => _PlannedEntryCardState();
+}
+
+class _PlannedEntryCardState extends State<_PlannedEntryCard> {
+  late final Future<RecommendationEntry?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.fetchRecommendation();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final tag = TpoTags.byLabel(entry.tpoTag);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: tag.color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(tag.icon, size: 13, color: tag.color),
+                    const SizedBox(width: 4),
+                    Text(tag.label,
+                        style: TextStyle(
+                            color: tag.color, fontSize: 12, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: widget.onDelete,
+                child: const Icon(Icons.delete_outline, color: AppColors.textDisabled, size: 20),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          FutureBuilder<RecommendationEntry?>(
+            future: _future,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Text('예정 일정 확인 중...',
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 12));
+              }
+              final rec = snapshot.data;
+              if (rec == null) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('에이전트가 코디를 준비할 예정이에요',
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 40,
+                      child: OutlinedButton.icon(
+                        onPressed: widget.onRecordManually,
+                        icon: const Icon(Icons.checkroom_outlined, size: 16, color: AppColors.blue),
+                        label: const Text('이 날 착장 기록하기',
+                            style: TextStyle(
+                                color: AppColors.blue, fontSize: 13, fontWeight: FontWeight.w700)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppColors.blue),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+
+              // 에이전트가 이미 준비해둔 추천이 있음 — 미리보기 + 확정 버튼.
+              final preview = rec.summaryText.isNotEmpty
+                  ? rec.summaryText
+                  : rec.itemSummaries.map((s) => s.split(':').first.trim()).join(', ');
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.auto_awesome, size: 14, color: AppColors.navy),
+                      SizedBox(width: 6),
+                      Text('에이전트가 준비한 코디',
+                          style: TextStyle(
+                              color: AppColors.navy, fontSize: 12, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(preview,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 40,
+                          child: ElevatedButton(
+                            onPressed: () => widget.onConfirmRecommendation(rec),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.navy,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: const Text('이 코디로 확정',
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 40,
+                          child: OutlinedButton(
+                            onPressed: widget.onRecordManually,
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: AppColors.border),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: const Text('직접 기록',
+                                style: TextStyle(
+                                    color: AppColors.textMuted,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),

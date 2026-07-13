@@ -279,21 +279,25 @@ class FirestoreService {
   }
 
   // ── 레벨 3: 피드백 학습 ──
-  // 특정 날짜 일정을 위한 선제 추천들 조회(피드백 대조용). targetDate 단일
-  // 필드 equality라 복합 인덱스 불필요. TPO 필터는 호출부가 클라이언트에서.
-  static Future<List<RecommendationEntry>> recommendationsForDateSilently(
-      String uid, DateTime date) async {
+  // 날짜 ± windowDays 범위의 선제/일반 추천들 조회(피드백 대조용). targetDate
+  // 단일 필드 range(양방향 부등호)라 복합 인덱스 불필요. 태그 우선순위·근접
+  // 매칭은 호출부(agent_planner.dart)가 클라이언트에서 처리한다.
+  static Future<List<RecommendationEntry>> recommendationsInDateRangeSilently(
+      String uid, DateTime centerDate, int windowDays) async {
     try {
-      final normalized = DateTime(date.year, date.month, date.day);
+      final center = DateTime(centerDate.year, centerDate.month, centerDate.day);
+      final start = center.subtract(Duration(days: windowDays));
+      final end = center.add(Duration(days: windowDays));
       final snapshot = await _db
           .collection(_usersCol)
           .doc(uid)
           .collection(_recommendationsCol)
-          .where('targetDate', isEqualTo: Timestamp.fromDate(normalized))
+          .where('targetDate', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('targetDate', isLessThanOrEqualTo: Timestamp.fromDate(end))
           .get();
       return snapshot.docs.map((d) => RecommendationEntry.fromFirestore(d)).toList();
     } catch (e) {
-      debugPrint('[FEEDBACK] 날짜별 추천 조회 실패: $e');
+      debugPrint('[FEEDBACK] 기간별 추천 조회 실패: $e');
       return [];
     }
   }
@@ -535,6 +539,29 @@ class FirestoreService {
         .collection(_calendarCol)
         .add(entry.toFirestore());
     return doc.id;
+  }
+
+  // 예정(planned) 캘린더 문서를 그대로 기록(recorded)으로 전환할 때 쓴다.
+  // 새 문서를 만들지 않고 같은 문서를 업데이트 — date/tpoTag/createdAt은
+  // 원래 예정 등록 시점 값을 그대로 유지한다.
+  static Future<void> updateCalendarEntry(
+    String uid,
+    String id, {
+    required String status,
+    String? fittingImageUrl,
+    required List<String> itemIds,
+    required List<String> itemSummaries,
+    required String source,
+    String? recommendationId,
+  }) async {
+    await _db.collection(_usersCol).doc(uid).collection(_calendarCol).doc(id).update({
+      'status': status,
+      if (fittingImageUrl != null) 'fittingImageUrl': fittingImageUrl,
+      'itemIds': itemIds,
+      'itemSummaries': itemSummaries,
+      'source': source,
+      if (recommendationId != null) 'recommendationId': recommendationId,
+    });
   }
 
   static Future<void> deleteCalendarEntry(String uid, String id) async {

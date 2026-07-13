@@ -110,9 +110,10 @@ class AgentLogScreen extends StatelessWidget {
 }
 
 // 최근 30일 채택률을 숫자로 보여주는 요약 카드 — "에이전트가 실제로
-// 학습하고 있는지"를 심사/시연에서 즉시 증명하는 용도. 화면 진입 시
-// 한 번만 계산한다(StatefulWidget으로 감싸 initState에서 fetch — 아래
-// StreamBuilder의 재빌드와 무관하게 재계산되지 않게 한다).
+// 학습하고 있는지"를 심사/시연에서 즉시 증명하는 용도. 활동 로그
+// 스트림(agentLogStream)을 같이 구독해 로그 건수가 바뀔 때마다(새 착장
+// 기록 → detectFeedbackForCalendarEntry가 로그를 남기는 시점) 재계산한다
+// — 화면에 머무른 채로도 최신 채택률이 반영된다.
 class _StatsCard extends StatefulWidget {
   final String uid;
 
@@ -123,88 +124,96 @@ class _StatsCard extends StatefulWidget {
 }
 
 class _StatsCardState extends State<_StatsCard> {
-  late final Future<AgentStats> _future;
+  Future<AgentStats>? _future;
+  int? _lastLogCount;
 
-  @override
-  void initState() {
-    super.initState();
+  void _recomputeIfLogCountChanged(int logCount) {
+    if (_lastLogCount == logCount) return;
+    _lastLogCount = logCount;
     _future = AgentStats.compute(widget.uid);
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<AgentStats>(
-      future: _future,
-      builder: (context, snapshot) {
-        final stats = snapshot.data;
-        if (stats == null) return const SizedBox.shrink(); // 로딩 중/실패 시 조용히 생략
+    return StreamBuilder<List<AgentLogEntry>>(
+      stream: FirestoreService.agentLogStream(widget.uid),
+      builder: (context, logSnapshot) {
+        _recomputeIfLogCountChanged(logSnapshot.data?.length ?? _lastLogCount ?? 0);
+        return FutureBuilder<AgentStats>(
+          future: _future,
+          builder: (context, snapshot) {
+            final stats = snapshot.data;
+            if (stats == null) return const SizedBox.shrink(); // 로딩 중/실패 시 조용히 생략
 
-        if (stats.overallTotal == 0) {
-          return Container(
-            margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.insights_outlined, color: AppColors.textDisabled, size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '추천을 캘린더에 기록하면 에이전트의 학습 성과가 여기 표시돼요',
-                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.4),
-                  ),
+            if (stats.overallTotal == 0) {
+              return Container(
+                margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
                 ),
-              ],
-            ),
-          );
-        }
-
-        final overallPercent = ((stats.overallRate ?? 0) * 100).round();
-        final tagLine = stats.byTag
-            .map((t) => '[${t.tag}] ${(t.rate * 100).round()}%')
-            .join(' · ');
-
-        return Container(
-          margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: AppColors.bluePale,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: AppColors.blue.withValues(alpha: 0.2)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.insights_outlined, color: AppColors.blue, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '이번 달 추천 채택률 $overallPercent% '
-                      '(${stats.overallTotal}건 중 ${stats.overallAccepted}건)',
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
+                child: Row(
+                  children: [
+                    const Icon(Icons.insights_outlined, color: AppColors.textDisabled, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '추천을 캘린더에 기록하면 에이전트의 학습 성과가 여기 표시돼요',
+                        style:
+                            const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.4),
                       ),
                     ),
+                  ],
+                ),
+              );
+            }
+
+            final overallPercent = ((stats.overallRate ?? 0) * 100).round();
+            final tagLine = stats.byTag
+                .map((t) => '[${t.tag}] ${(t.rate * 100).round()}%')
+                .join(' · ');
+
+            return Container(
+              margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.bluePale,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.blue.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.insights_outlined, color: AppColors.blue, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '이번 달 추천 채택률 $overallPercent% '
+                          '(${stats.overallTotal}건 중 ${stats.overallAccepted}건)',
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
+                  if (tagLine.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      tagLine,
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.4),
+                    ),
+                  ],
                 ],
               ),
-              if (tagLine.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(
-                  tagLine,
-                  style: const TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.4),
-                ),
-              ],
-            ],
-          ),
+            );
+          },
         );
       },
     );
