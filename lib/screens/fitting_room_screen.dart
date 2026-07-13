@@ -59,6 +59,11 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
   // ── 가상 피팅 캐시 배지 접기/펼치기 ──────────────────────
   bool _showCacheBadge = false;
 
+  // ── 분석 결과 점수 배지 펼치기: 컬러 조합 점수 → 스타일링 팁,
+  // 코디 분위기 → 다른 색상 추천을 각각 눌렀을 때만 아래로 펼쳐 보여준다.
+  bool _colorTipExpanded = false;
+  bool _moodTipExpanded = false;
+
   // ── 가상 피팅 스크랩 ─────────────────────────────────────
   String? _scrapId; // null이면 미스크랩, 값이 있으면 그 스크랩 문서 id
   String? _checkedScrapUrl; // 마지막으로 isScrapped를 조회한 URL(중복 조회 방지)
@@ -245,6 +250,26 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
       default:
         return AppColors.blue;
     }
+  }
+
+  // 점수 줄을 뺀 나머지 텍스트를 "1. 스타일링 팁" / "2. 다른 색상 추천"
+  // 두 항목으로 분리한다. 스트리밍 도중에는 2번 항목이 아직 안 왔을 수
+  // 있으므로 그 경우 styleTip만 채워지고 colorTip은 null로 남는다.
+  String _stripLeadingNumber(String text) =>
+      text.replaceFirst(RegExp(r'^\d+\.\s*'), '');
+
+  ({String? styleTip, String? colorTip}) _splitTips(String text) {
+    final match = RegExp(r'\n\s*2\.\s*').firstMatch(text);
+    if (match == null) {
+      final tip = _stripLeadingNumber(text.trim());
+      return (styleTip: tip.isEmpty ? null : tip, colorTip: null);
+    }
+    final styleTip = _stripLeadingNumber(text.substring(0, match.start).trim());
+    final colorTip = _stripLeadingNumber(text.substring(match.start).trim());
+    return (
+      styleTip: styleTip.isEmpty ? null : styleTip,
+      colorTip: colorTip.isEmpty ? null : colorTip,
+    );
   }
 
   // "N. 다른 색상 추천: ..." 구간만 40자로 잘라낸다 — 프롬프트로 길이를
@@ -1193,74 +1218,112 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                           height: 1.8),
                     )
                   else ...[
-                  // ── 컬러 조합 점수 배지 ──────────────────────────
+                  // ── 컬러 조합 점수 배지 (탭하면 스타일링 팁이 펼쳐진다) ──
                   Builder(builder: (context) {
                     final score = _parseScore(analysisResult);
                     if (score == null) return const SizedBox.shrink();
                     final color = _scoreColor(score);
-                    return Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
-                      margin: const EdgeInsets.only(bottom: 16),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.07),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: color.withValues(alpha: 0.25)),
-                      ),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 56,
-                            height: 56,
-                            child: Stack(
-                              fit: StackFit.expand,
+                    final styleTip = _splitTips(
+                            _capOtherColorRecommendation(_stripScoreLine(analysisResult)))
+                        .styleTip;
+                    return GestureDetector(
+                      onTap: styleTip == null
+                          ? null
+                          : () => setState(() => _colorTipExpanded = !_colorTipExpanded),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.07),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: color.withValues(alpha: 0.25)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
                               children: [
-                                CircularProgressIndicator(
-                                  value: score / 100,
-                                  strokeWidth: 5,
-                                  backgroundColor: color.withValues(alpha: 0.15),
-                                  valueColor: AlwaysStoppedAnimation<Color>(color),
-                                ),
-                                Center(
-                                  child: Text(
-                                    '$score',
-                                    style: TextStyle(
-                                      color: color,
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w900,
-                                    ),
+                                SizedBox(
+                                  width: 56,
+                                  height: 56,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      CircularProgressIndicator(
+                                        value: score / 100,
+                                        strokeWidth: 5,
+                                        backgroundColor: color.withValues(alpha: 0.15),
+                                        valueColor: AlwaysStoppedAnimation<Color>(color),
+                                      ),
+                                      Center(
+                                        child: Text(
+                                          '$score',
+                                          style: TextStyle(
+                                            color: color,
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('컬러 조합 점수',
-                                    style: TextStyle(
-                                        color: AppColors.textMuted,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600)),
-                                const SizedBox(height: 3),
-                                Text(
-                                  _scoreLabel(score),
-                                  style: TextStyle(
-                                      color: color,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text('컬러 조합 점수',
+                                          style: TextStyle(
+                                              color: AppColors.textMuted,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600)),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        _scoreLabel(score),
+                                        style: TextStyle(
+                                            color: color,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w800),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text('$score / 100점',
+                                          style: TextStyle(
+                                              color: color.withValues(alpha: 0.75),
+                                              fontSize: 12)),
+                                    ],
+                                  ),
                                 ),
-                                const SizedBox(height: 2),
-                                Text('$score / 100점',
-                                    style: TextStyle(
-                                        color: color.withValues(alpha: 0.75),
-                                        fontSize: 12)),
+                                if (styleTip != null)
+                                  Icon(
+                                    _colorTipExpanded
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    color: color.withValues(alpha: 0.6),
+                                  ),
                               ],
                             ),
-                          ),
-                        ],
+                            if (styleTip != null)
+                              AnimatedCrossFade(
+                                firstChild: const SizedBox(width: double.infinity),
+                                secondChild: Padding(
+                                  padding: const EdgeInsets.only(top: 14),
+                                  child: Text(
+                                    styleTip,
+                                    style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 13,
+                                        height: 1.7),
+                                  ),
+                                ),
+                                crossFadeState: _colorTipExpanded
+                                    ? CrossFadeState.showSecond
+                                    : CrossFadeState.showFirst,
+                                duration: const Duration(milliseconds: 200),
+                              ),
+                          ],
+                        ),
                       ),
                     );
                   }),
@@ -1274,77 +1337,111 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
                       return const SizedBox.shrink();
                     }
                     final color = _moodColor(mood);
-                    return Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
-                      margin: const EdgeInsets.only(bottom: 16),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.07),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: color.withValues(alpha: 0.25)),
-                      ),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 56,
-                            height: 56,
-                            child: Stack(
-                              fit: StackFit.expand,
+                    final colorTip = _splitTips(
+                            _capOtherColorRecommendation(_stripScoreLine(analysisResult)))
+                        .colorTip;
+                    return GestureDetector(
+                      onTap: colorTip == null
+                          ? null
+                          : () => setState(() => _moodTipExpanded = !_moodTipExpanded),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: color.withValues(alpha: 0.07),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: color.withValues(alpha: 0.25)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
                               children: [
-                                CircularProgressIndicator(
-                                  value: moodScore / 100,
-                                  strokeWidth: 5,
-                                  backgroundColor: color.withValues(alpha: 0.15),
-                                  valueColor: AlwaysStoppedAnimation<Color>(color),
-                                ),
-                                Center(
-                                  child: Text(
-                                    '$moodScore',
-                                    style: TextStyle(
-                                      color: color,
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w900,
-                                    ),
+                                SizedBox(
+                                  width: 56,
+                                  height: 56,
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      CircularProgressIndicator(
+                                        value: moodScore / 100,
+                                        strokeWidth: 5,
+                                        backgroundColor: color.withValues(alpha: 0.15),
+                                        valueColor: AlwaysStoppedAnimation<Color>(color),
+                                      ),
+                                      Center(
+                                        child: Text(
+                                          '$moodScore',
+                                          style: TextStyle(
+                                            color: color,
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('코디 분위기',
-                                    style: TextStyle(
-                                        color: AppColors.textMuted,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600)),
-                                const SizedBox(height: 3),
-                                Text(
-                                  mood,
-                                  style: TextStyle(
-                                      color: color,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text('코디 분위기',
+                                          style: TextStyle(
+                                              color: AppColors.textMuted,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600)),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        mood,
+                                        style: TextStyle(
+                                            color: color,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w800),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text('$moodScore / 100점',
+                                          style: TextStyle(
+                                              color: color.withValues(alpha: 0.75),
+                                              fontSize: 12)),
+                                    ],
+                                  ),
                                 ),
-                                const SizedBox(height: 2),
-                                Text('$moodScore / 100점',
-                                    style: TextStyle(
-                                        color: color.withValues(alpha: 0.75),
-                                        fontSize: 12)),
+                                if (colorTip != null)
+                                  Icon(
+                                    _moodTipExpanded
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    color: color.withValues(alpha: 0.6),
+                                  ),
                               ],
                             ),
-                          ),
-                        ],
+                            if (colorTip != null)
+                              AnimatedCrossFade(
+                                firstChild: const SizedBox(width: double.infinity),
+                                secondChild: Padding(
+                                  padding: const EdgeInsets.only(top: 14),
+                                  child: Text(
+                                    colorTip,
+                                    style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 13,
+                                        height: 1.7),
+                                  ),
+                                ),
+                                crossFadeState: _moodTipExpanded
+                                    ? CrossFadeState.showSecond
+                                    : CrossFadeState.showFirst,
+                                duration: const Duration(milliseconds: 200),
+                              ),
+                          ],
+                        ),
                       ),
                     );
                   }),
-                  Text(_capOtherColorRecommendation(_stripScoreLine(analysisResult)),
-                      style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 14,
-                          height: 1.8)),
+                  _StyleRecommendationRow(selectedItems: widget.selectedItems),
                   if (_isStreamingAnalysis) ...[
                     const SizedBox(height: 10),
                     const Row(
@@ -1400,6 +1497,159 @@ class _FittingRoomScreenState extends State<FittingRoomScreen> {
 
 // 팝업 슬라이드 한 장 — 보여줄 아이템과 그 아래 캡션(추천 이유 또는 팁).
 typedef _PopupSlide = ({WardrobeItem item, String caption});
+
+// 지금 선택된 아이템들과 어울리는 "다른 카테고리" 옷장 아이템을 OutfitMatcher로
+// 로컬 매칭한다(Gemini 호출 없음). 카테고리당 상위 2개까지 모아 궁합 점수
+// 내림차순으로 최대 maxItems개 반환 — 로딩 팝업과 분석 결과의 스타일 추천
+// 슬라이드가 이 로직을 공유한다. 매칭 후보가 없으면 빈 리스트.
+Future<List<_PopupSlide>> _matchStyleRecommendations(
+  Map<String, WardrobeItem?> selectedItems, {
+  int maxItems = 5,
+}) async {
+  final selected = selectedItems.values.whereType<WardrobeItem>().toList();
+  final selectedWithAttrs = selected.where((i) => i.attributes != null).toList();
+  if (selectedWithAttrs.isEmpty) return const [];
+
+  final wardrobe = await FirestoreService.wardrobeStream().first;
+  final fittingIds = selected.map((i) => i.id).toSet();
+  const allCategories = ['상의', '하의', '아우터', '신발', '액세서리'];
+
+  final scored = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
+  for (final category in allCategories) {
+    final eligibleAnchors = selectedWithAttrs.where((a) => a.category != category).toList();
+    if (eligibleAnchors.isEmpty) continue;
+
+    final pool = wardrobe
+        .where((i) =>
+            i.category == category && i.attributes != null && !fittingIds.contains(i.id))
+        .toList();
+    if (pool.isEmpty) continue;
+
+    final perCategory = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
+    for (final candidate in pool) {
+      WardrobeItem? bestAnchor;
+      var bestScore = double.negativeInfinity;
+      for (final anchor in eligibleAnchors) {
+        final score = OutfitMatcher.compatibilityScore(anchor.attributes!, candidate.attributes!);
+        if (score > bestScore) {
+          bestScore = score;
+          bestAnchor = anchor;
+        }
+      }
+      if (bestAnchor != null) {
+        perCategory.add((item: candidate, anchor: bestAnchor, score: bestScore));
+      }
+    }
+    perCategory.sort((a, b) => b.score.compareTo(a.score));
+    scored.addAll(perCategory.take(2));
+  }
+
+  scored.sort((a, b) => b.score.compareTo(a.score));
+  if (scored.isEmpty) return const [];
+  return scored
+      .take(maxItems)
+      .map((s) => (item: s.item, caption: buildOutfitReason(anchor: s.anchor, candidate: s.item)))
+      .toList();
+}
+
+// ── 분석 결과 하단 "내 스타일에 맞춰 추천" 가로 슬라이드 ────────
+// AI 코디 분석 결과의 두 점수 배지 아래에 붙어, 지금 선택된 아이템들과
+// 궁합 좋은 다른 옷장 아이템을 가로 스크롤 카드로 보여준다. 선택 조합이
+// 바뀔 때만(id 조합 서명 비교) 다시 계산한다.
+class _StyleRecommendationRow extends StatefulWidget {
+  final Map<String, WardrobeItem?> selectedItems;
+
+  const _StyleRecommendationRow({required this.selectedItems});
+
+  @override
+  State<_StyleRecommendationRow> createState() => _StyleRecommendationRowState();
+}
+
+class _StyleRecommendationRowState extends State<_StyleRecommendationRow> {
+  List<_PopupSlide>? _items;
+  String? _lastSignature;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StyleRecommendationRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _load();
+  }
+
+  String get _signature => (widget.selectedItems.values
+          .whereType<WardrobeItem>()
+          .map((i) => i.id)
+          .toList()
+        ..sort())
+      .join(',');
+
+  Future<void> _load() async {
+    final signature = _signature;
+    if (signature == _lastSignature) return;
+    _lastSignature = signature;
+    List<_PopupSlide> result;
+    try {
+      result = await _matchStyleRecommendations(widget.selectedItems, maxItems: 8);
+    } catch (e) {
+      debugPrint('[STYLE-RECOMMEND] 추천 매칭 실패: $e');
+      result = const [];
+    }
+    if (!mounted || _signature != signature) return;
+    setState(() => _items = result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    if (items == null || items.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('내 스타일에 맞는 추천 옷',
+              style: TextStyle(
+                  color: AppColors.textPrimary, fontSize: 13, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 118,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: items.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, i) {
+                final slide = items[i];
+                return Container(
+                  width: 118,
+                  height: 118,
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: CachedNetworkImage(
+                    imageUrl: slide.item.cutoutImageUrl ?? slide.item.imageUrl,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(color: AppColors.surface),
+                    errorWidget: (_, __, ___) =>
+                        const Icon(Icons.image_outlined, color: AppColors.textDisabled),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 // 로딩 대기 팝업의 콤팩트 카드 — 화면 폭의 80%, 내용에 맞는 세로 크기.
 // 지금 피팅 중인 옷들과 어울리는 "다른 카테고리" 아이템을 OutfitMatcher로
@@ -1464,59 +1714,11 @@ class _FittingLoadingPopupState extends State<_FittingLoadingPopup> {
   // 현재 피팅 중인 옷 + style_tips 팁으로 폴백.
   Future<List<_PopupSlide>> _buildSuggestionSlides() async {
     final selected = widget.selectedItems.values.whereType<WardrobeItem>().toList();
-    final selectedWithAttrs = selected.where((i) => i.attributes != null).toList();
-
-    if (selectedWithAttrs.isNotEmpty) {
-      try {
-        final wardrobe = await FirestoreService.wardrobeStream().first;
-        final fittingIds = selected.map((i) => i.id).toSet();
-        const allCategories = ['상의', '하의', '아우터', '신발', '액세서리'];
-
-        final scored = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
-        for (final category in allCategories) {
-          // 같은 카테고리 자기 자신과 비교하는 건 의미가 없으니, 이 카테고리를
-          // 추천할 근거는 "다른 카테고리"의 피팅 아이템만 앵커로 삼는다.
-          final eligibleAnchors =
-              selectedWithAttrs.where((a) => a.category != category).toList();
-          if (eligibleAnchors.isEmpty) continue;
-
-          final pool = wardrobe
-              .where((i) =>
-                  i.category == category && i.attributes != null && !fittingIds.contains(i.id))
-              .toList();
-          if (pool.isEmpty) continue;
-
-          final perCategory = <({WardrobeItem item, WardrobeItem anchor, double score})>[];
-          for (final candidate in pool) {
-            WardrobeItem? bestAnchor;
-            var bestScore = double.negativeInfinity;
-            for (final anchor in eligibleAnchors) {
-              final score =
-                  OutfitMatcher.compatibilityScore(anchor.attributes!, candidate.attributes!);
-              if (score > bestScore) {
-                bestScore = score;
-                bestAnchor = anchor;
-              }
-            }
-            if (bestAnchor != null) {
-              perCategory.add((item: candidate, anchor: bestAnchor, score: bestScore));
-            }
-          }
-          perCategory.sort((a, b) => b.score.compareTo(a.score));
-          scored.addAll(perCategory.take(2));
-        }
-
-        scored.sort((a, b) => b.score.compareTo(a.score));
-        if (scored.isNotEmpty) {
-          return scored
-              .take(5)
-              .map((s) =>
-                  (item: s.item, caption: buildOutfitReason(anchor: s.anchor, candidate: s.item)))
-              .toList();
-        }
-      } catch (e) {
-        debugPrint('[FITTING-POPUP] 추천 매칭 실패, 폴백으로 전환: $e');
-      }
+    try {
+      final matched = await _matchStyleRecommendations(widget.selectedItems, maxItems: 5);
+      if (matched.isNotEmpty) return matched;
+    } catch (e) {
+      debugPrint('[FITTING-POPUP] 추천 매칭 실패, 폴백으로 전환: $e');
     }
 
     // 폴백 — 현재 피팅 중인 옷 + 순환 팁.
