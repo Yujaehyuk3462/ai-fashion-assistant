@@ -1,5 +1,13 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+
+# firebase_cpp_sdk_windows(플러그인이 빌드 시 자동으로 풀어놓는 서드파티 SDK)의
+# CMakeLists.txt가 cmake_minimum_required(VERSION 2.8) 같은 아주 오래된 버전을
+# 요구하는데, CMake 4.0부터 3.5 미만 호환이 완전히 제거되어 빌드가 실패한다.
+# 이 프로젝트 트리 전체(서드파티 서브디렉터리 포함)에 최소 정책 버전을 강제
+# 지정해 우회한다. 소스를 직접 못 고치는 외부 SDK라 여기서 전역으로 처리.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 project(ai_fashion_assistant LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -39,7 +47,11 @@ add_definitions(-DUNICODE -D_UNICODE)
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
-  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
+  # /wd4819: flutter_onnxruntime 플러그인 소스가 UTF-8(BOM 없음)로 저장돼 있어
+  # 한국어 코드페이지(949)에서 표시 못하는 문자가 있다는 경고(C4819)가 뜬다.
+  # 실제 컴파일에는 문제없는(표시상의) 경고인데 /WX 때문에 에러로 승격돼
+  # 빌드가 막히므로 이 경고만 목록에서 제외한다.
+  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100" /wd"4819")
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
@@ -65,9 +77,12 @@ include(flutter/generated_plugins.cmake)
 set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
 # Make the "install" step default, as it's required to run.
 set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
-endif()
+# 원래는 CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT일 때만 덮어썼는데, 이
+# 환경에서는 이 값이 FALSE로 평가되어 install 경로가 Windows 기본값인
+# "C:/Program Files/ai_fashion_assistant"로 잡히고, 관리자 권한이 없어
+# install 단계(cmake_install.cmake)가 실패했다. 조건 없이 항상 번들 경로로
+# 강제 지정해 우회한다.
+set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")

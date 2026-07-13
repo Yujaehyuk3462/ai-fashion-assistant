@@ -7,31 +7,10 @@ import 'agent_log_screen.dart';
 import 'body_profile_screen.dart';
 import 'scrap_screen.dart';
 
-const _settingsGroups = [
-  {
-    'title': '계정',
-    'items': [
-      {'icon': Icons.person, 'label': '프로필 설정', 'sub': '김민준 · 25세'},
-      {'icon': Icons.notifications, 'label': '알림 설정', 'sub': 'AI 추천 알림 켜짐'},
-    ],
-  },
-  {
-    'title': '앱 설정',
-    'items': [
-      {'icon': Icons.bookmark, 'label': '내 스크랩', 'sub': null},
-      {'icon': Icons.smart_toy, 'label': 'AI 비서 활동 내역', 'sub': '에이전트가 한 일 타임라인'},
-      {'icon': Icons.smartphone, 'label': '체형 정보', 'sub': null}, // 실시간 프로필 데이터로 대체됨
-    ],
-  },
-  {
-    'title': '기타',
-    'items': [
-      {'icon': Icons.shield, 'label': '개인정보 처리방침', 'sub': null},
-      {'icon': Icons.help_outline, 'label': '고객센터', 'sub': '평일 09:00 - 18:00'},
-    ],
-  },
-];
-
+// ── 설정 화면: "DOT." 레퍼런스 디자인(더보기)에 맞춰 단순한 리스트형으로
+// 정리했다. 기존 화면의 실제 기능(내 스크랩, AI 비서 활동 내역, 체형 정보)은
+// 그대로 유지하고, 나머지 항목(프로필/알림/약관 등)은 새 레이아웃에 맞게
+// 재배치했다.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -41,6 +20,8 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   UserProfile? _profile;
+  bool _pushEnabled = true;
+  bool _marketingEnabled = false;
 
   @override
   void initState() {
@@ -57,12 +38,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _bodyInfoSummary() {
     final profile = _profile;
-    if (profile == null || !profile.hasAnyData) return '입력해 주세요';
+    if (profile == null || !profile.hasAnyData) return '체형 정보 입력하기';
     final parts = <String>[];
     if (profile.heightCm != null) parts.add('${profile.heightCm}cm');
     if (profile.weightKg != null) parts.add('${profile.weightKg}kg');
     if (profile.personalColor != null) parts.add(profile.personalColor!);
-    return parts.isEmpty ? '입력됨' : parts.join(' · ');
+    return parts.isEmpty ? '체형 정보 보기' : parts.join(' · ');
   }
 
   void _openBodyProfile() async {
@@ -87,146 +68,238 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _comingSoon(String label) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label은(는) 준비 중입니다'), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  void _openLicensePage() {
+    showLicensePage(
+      context: context,
+      applicationName: 'DOT.',
+      applicationVersion: '1.0.0',
+    );
+  }
+
+  Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('로그아웃'),
+        content: const Text('로그아웃 하시겠어요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('로그아웃', style: TextStyle(color: AppColors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await FirebaseAuth.instance.signOut();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          _buildProfileHeader(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+    return Container(
+      color: Colors.white,
+      child: SingleChildScrollView(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ..._settingsGroups.map((group) => _buildGroup(group)),
-                const SizedBox(height: 8),
-                const Text(
-                  'StyleAI v1.0.0',
-                  style: TextStyle(color: AppColors.textDisabled, fontSize: 11),
+                // ── 마이페이지 카드 ──
+                _MyPageCard(
+                  title: '마이페이지',
+                  subtitle: _bodyInfoSummary(),
+                  onTap: _openBodyProfile,
+                ),
+                const SizedBox(height: 28),
+                const _SectionLabel('설정'),
+                _SettingsRow(label: '내 스크랩', onTap: _openScraps),
+                _SettingsRow(
+                  label: 'AI 비서 활동 내역',
+                  sub: '에이전트가 한 일 타임라인',
+                  onTap: _openAgentLog,
+                ),
+                _SettingsRow(
+                  label: '푸시 알림',
+                  trailing: Switch.adaptive(
+                    value: _pushEnabled,
+                    activeColor: Colors.black,
+                    onChanged: (v) => setState(() => _pushEnabled = v),
+                  ),
+                ),
+                _SettingsRow(
+                  label: '마케팅 정보 수신',
+                  trailing: Switch.adaptive(
+                    value: _marketingEnabled,
+                    activeColor: Colors.black,
+                    onChanged: (v) => setState(() => _marketingEnabled = v),
+                  ),
+                ),
+                const SizedBox(height: 28),
+                const _SectionLabel('정보'),
+                _SettingsRow(label: '이용약관', onTap: () => _comingSoon('이용약관')),
+                _SettingsRow(label: '개인정보처리방침', onTap: () => _comingSoon('개인정보처리방침')),
+                _SettingsRow(label: '오픈소스 라이선스', onTap: _openLicensePage),
+                const _SettingsRow(label: '앱 버전', trailingText: '1.0.0'),
+                const SizedBox(height: 32),
+                GestureDetector(
+                  onTap: _signOut,
+                  child: const Text(
+                    '로그아웃',
+                    style: TextStyle(
+                      color: AppColors.red,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ],
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProfileHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppColors.navy, AppColors.navyLight],
         ),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(16),
+    );
+  }
+}
+
+// ── 마이페이지 카드 ────────────────────────────────────────
+class _MyPageCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _MyPageCard({required this.title, required this.subtitle, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                'DOT',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.3,
+                ),
+              ),
             ),
-            child: const Icon(Icons.person_outline, color: Colors.white70, size: 28),
-          ),
-          const SizedBox(width: 16),
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('김민준', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700, height: 1.2)),
-              SizedBox(height: 2),
-              Text('내 옷장 8벌 · 착장 기록 5개', style: TextStyle(color: Color(0x99FFFFFF), fontSize: 13)),
-            ],
-          ),
-        ],
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: AppColors.textDisabled, size: 18),
+          ],
+        ),
       ),
     );
   }
+}
 
-  Widget _buildGroup(Map<String, dynamic> group) {
-    final items = group['items'] as List;
+class _SectionLabel extends StatelessWidget {
+  final String text;
+
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Text(
-              (group['title'] as String).toUpperCase(),
-              style: const TextStyle(
-                color: AppColors.textPlaceholder,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Text(
+        text,
+        style: const TextStyle(color: AppColors.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+// ── 단순 리스트 행: 라벨 + (스위치 | 텍스트 | 화살표) ─────
+class _SettingsRow extends StatelessWidget {
+  final String label;
+  final String? sub;
+  final String? trailingText;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  const _SettingsRow({
+    required this.label,
+    this.sub,
+    this.trailingText,
+    this.trailing,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: AppColors.divider)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: const TextStyle(color: AppColors.textPrimary, fontSize: 14)),
+                  if (sub != null) ...[
+                    const SizedBox(height: 2),
+                    Text(sub!, style: const TextStyle(color: AppColors.textPlaceholder, fontSize: 11)),
+                  ],
+                ],
               ),
             ),
-          ),
-          Container(
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [BoxShadow(color: AppColors.navy.withValues(alpha: 0.07), blurRadius: 12, offset: const Offset(0, 2))],
-            ),
-            child: Column(
-              children: List.generate(items.length, (i) {
-                final item = items[i] as Map<String, dynamic>;
-                final icon = item['icon'] as IconData;
-                final label = item['label'] as String;
-                final isBodyInfo = label == '체형 정보';
-                final isMyScraps = label == '내 스크랩';
-                final isAgentLog = label == 'AI 비서 활동 내역';
-                final sub = isBodyInfo ? _bodyInfoSummary() : item['sub'] as String?;
-                return Column(
-                  children: [
-                    InkWell(
-                      onTap: isBodyInfo
-                          ? _openBodyProfile
-                          : isMyScraps
-                              ? _openScraps
-                              : isAgentLog
-                                  ? _openAgentLog
-                                  : () {},
-                      borderRadius: BorderRadius.circular(16),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 36,
-                              height: 36,
-                              decoration: BoxDecoration(color: AppColors.bluePale, borderRadius: BorderRadius.circular(10)),
-                              child: Icon(icon, color: AppColors.blue, size: 18),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(label, style: const TextStyle(color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w600)),
-                                  if (sub != null) ...[
-                                    const SizedBox(height: 1),
-                                    Text(sub, style: const TextStyle(color: AppColors.textPlaceholder, fontSize: 12)),
-                                  ],
-                                ],
-                              ),
-                            ),
-                            const Icon(Icons.chevron_right, color: AppColors.textDisabled, size: 16),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (i < items.length - 1)
-                      const Divider(height: 1, color: AppColors.divider, indent: 64),
-                  ],
-                );
-              }),
-            ),
-          ),
-        ],
+            if (trailing != null)
+              trailing!
+            else if (trailingText != null) ...[
+              Text(trailingText!, style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
+              if (onTap != null) ...[
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, color: AppColors.textDisabled, size: 16),
+              ],
+            ] else if (onTap != null)
+              const Icon(Icons.chevron_right, color: AppColors.textDisabled, size: 16),
+          ],
+        ),
       ),
     );
   }

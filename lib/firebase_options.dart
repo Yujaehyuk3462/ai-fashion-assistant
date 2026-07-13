@@ -33,10 +33,10 @@ class DefaultFirebaseOptions {
           'you can reconfigure this by running the FlutterFire CLI again.',
         );
       case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        // TODO: FlutterFire CLI로 정식 windows 앱을 등록하기 전까지, UI 확인용
+        // 로컬 실행이 막히지 않도록 iOS 설정값을 임시로 재사용한다. 로그인/
+        // Firestore 등 실제 백엔드 호출은 정상 동작을 보장하지 않는다.
+        return ios;
       case TargetPlatform.linux:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for linux - '

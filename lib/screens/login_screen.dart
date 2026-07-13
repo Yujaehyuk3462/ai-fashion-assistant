@@ -32,22 +32,31 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  void _snsComingSoon(String provider) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$provider 로그인은 준비 중입니다'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: Colors.white,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28),
           child: Column(
             children: [
-              const Spacer(flex: 2),
+              const Spacer(flex: 3),
               // 로고 영역
               _buildLogo(),
-              const Spacer(flex: 2),
+              const Spacer(flex: 4),
               // 로그인 버튼 영역
               _buildLoginButtons(),
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
               // 하단 안내
               _buildFooter(),
               const SizedBox(height: 24),
@@ -59,41 +68,26 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildLogo() {
-    return Column(
+    return const Column(
       children: [
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            color: AppColors.navy,
-            borderRadius: BorderRadius.circular(22),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.navy.withValues(alpha: 0.35),
-                blurRadius: 24,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.checkroom, color: Colors.white, size: 40),
-        ),
-        const SizedBox(height: 20),
-        const Text(
-          'StyleAI',
+        Text(
+          'DOT.',
           style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 32,
+            color: Colors.black,
+            fontSize: 36,
             fontWeight: FontWeight.w900,
             letterSpacing: -1.0,
           ),
         ),
-        const SizedBox(height: 8),
-        const Text(
-          'AI가 제안하는 나만의 코디',
+        SizedBox(height: 10),
+        Text(
+          '당신의 취향을 아는\n가장 쉬운 스타일링',
+          textAlign: TextAlign.center,
           style: TextStyle(
             color: AppColors.textMuted,
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: FontWeight.w400,
+            height: 1.4,
           ),
         ),
       ],
@@ -103,135 +97,53 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildLoginButtons() {
     return Column(
       children: [
-        // 비회원 로그인 (메인 버튼)
-        GestureDetector(
+        // Google — 현재 실제 동작하는 로그인(익명 인증)에 연결해 테스트 가능하게 유지
+        _SnsButton(
+          label: 'Google로 계속하기',
+          color: Colors.white,
+          textColor: AppColors.textSecondary,
+          borderColor: AppColors.border,
+          icon: Icons.g_mobiledata,
+          iconColor: const Color(0xFF4285F4),
+          loading: _isLoading,
           onTap: _isLoading ? null : _signInAnonymously,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(
-              color: _isLoading ? AppColors.textDisabled : AppColors.navy,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: _isLoading
-                  ? []
-                  : [
-                      BoxShadow(
-                        color: AppColors.navy.withValues(alpha: 0.35),
-                        blurRadius: 20,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (_isLoading)
-                  const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2),
-                  )
-                else
-                  const Icon(Icons.person_outline, color: Colors.white, size: 20),
-                const SizedBox(width: 10),
-                Text(
-                  _isLoading ? '로그인 중...' : '비회원으로 시작하기',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
-        const SizedBox(height: 24),
-        // 구분선
-        Row(
-          children: [
-            const Expanded(child: Divider(color: AppColors.border)),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Text(
-                '또는 SNS로 로그인',
-                style: TextStyle(
-                  color: AppColors.textPlaceholder,
-                  fontSize: 12,
-                ),
-              ),
-            ),
-            const Expanded(child: Divider(color: AppColors.border)),
-          ],
+        const SizedBox(height: 12),
+        _SnsButton(
+          label: '카카오로 계속하기',
+          color: const Color(0xFFFEE500),
+          textColor: const Color(0xFF3C1E1E),
+          icon: Icons.chat_bubble,
+          iconColor: const Color(0xFF3C1E1E),
+          onTap: () => _snsComingSoon('카카오'),
         ),
-        const SizedBox(height: 20),
-        // SNS 로그인 버튼들 (준비 중)
-        Row(
-          children: [
-            Expanded(
-              child: _SnsButton(
-                label: 'Google',
-                color: Colors.white,
-                textColor: AppColors.textSecondary,
-                borderColor: AppColors.border,
-                icon: Icons.language,
-                iconColor: const Color(0xFF4285F4),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SnsButton(
-                label: '네이버',
-                color: const Color(0xFF03C75A),
-                textColor: Colors.white,
-                icon: Icons.search,
-                iconColor: Colors.white,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SnsButton(
-                label: '카카오',
-                color: const Color(0xFFFEE500),
-                textColor: const Color(0xFF3C1E1E),
-                icon: Icons.chat_bubble_outline,
-                iconColor: const Color(0xFF3C1E1E),
-              ),
-            ),
-          ],
+        const SizedBox(height: 12),
+        _SnsButton(
+          label: '네이버로 계속하기',
+          color: const Color(0xFF03C75A),
+          textColor: Colors.white,
+          icon: Icons.circle,
+          iconColor: Colors.white,
+          onTap: () => _snsComingSoon('네이버'),
         ),
       ],
     );
   }
 
   Widget _buildFooter() {
-    return Column(
-      children: [
-        Text(
-          'SNS 로그인은 준비 중입니다',
-          style: TextStyle(
-            color: AppColors.textPlaceholder,
-            fontSize: 12,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '비회원으로 시작하면 기기 변경 시 데이터가 유지되지 않을 수 있습니다.',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: AppColors.textDisabled,
-            fontSize: 11,
-            height: 1.5,
-          ),
-        ),
-      ],
+    return Text(
+      '계속 진행하면 이용약관 및 개인정보처리방침에\n동의하는 것으로 간주됩니다',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        color: AppColors.textPlaceholder,
+        fontSize: 11,
+        height: 1.5,
+      ),
     );
   }
 }
 
-// ── SNS 버튼 (준비 중 뱃지 포함) ───────────────────────
+// ── SNS 로그인 버튼 (전체 폭, 아이콘 + 텍스트) ───────────────────────
 class _SnsButton extends StatelessWidget {
   final String label;
   final Color color;
@@ -239,6 +151,8 @@ class _SnsButton extends StatelessWidget {
   final Color? borderColor;
   final IconData icon;
   final Color iconColor;
+  final VoidCallback? onTap;
+  final bool loading;
 
   const _SnsButton({
     required this.label,
@@ -247,28 +161,41 @@ class _SnsButton extends StatelessWidget {
     required this.icon,
     required this.iconColor,
     this.borderColor,
+    this.onTap,
+    this.loading = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: 0.45,
+    return GestureDetector(
+      onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 15),
         decoration: BoxDecoration(
           color: color,
           borderRadius: BorderRadius.circular(10),
           border: borderColor != null ? Border.all(color: borderColor!) : null,
         ),
-        child: Column(
+        child: Stack(
+          alignment: Alignment.center,
           children: [
-            Icon(icon, color: iconColor, size: 22),
-            const SizedBox(height: 4),
+            Positioned(
+              left: 16,
+              child: loading
+                  ? SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          color: textColor, strokeWidth: 2),
+                    )
+                  : Icon(icon, color: iconColor, size: 22),
+            ),
             Text(
-              label,
+              loading ? '로그인 중...' : label,
               style: TextStyle(
                 color: textColor,
-                fontSize: 11,
+                fontSize: 15,
                 fontWeight: FontWeight.w700,
               ),
             ),

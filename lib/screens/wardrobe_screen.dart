@@ -596,7 +596,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                       child: items.isEmpty
                           ? _buildEmptyState()
                           : GridView.builder(
-                              padding: const EdgeInsets.fromLTRB(20, 20, 20, 110),
+                              padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
                               gridDelegate:
                                   const SliverGridDelegateWithFixedCrossAxisCount(
                                 crossAxisCount: 2,
@@ -615,6 +615,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                               ),
                             ),
                     ),
+                    _buildCategoryBar(),
                   ],
                 ),
                 _buildFab(),
@@ -629,88 +630,78 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
   Widget _buildHeader(int totalCount) {
     return Container(
+      width: double.infinity,
       color: AppColors.surface,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '내 옷장',
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '$totalCount벌 보관 중',
-                      style: const TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.tune, color: AppColors.textSecondary, size: 20),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: AppColors.border)),
-            ),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-              child: Row(
-                children: categories.map((cat) {
-                  final isActive = _activeCategory == cat;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _activeCategory = cat),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: isActive ? AppColors.navy : AppColors.background,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          cat,
-                          style: TextStyle(
-                            color: isActive ? Colors.white : AppColors.textMuted,
-                            fontSize: 13,
-                            fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                            letterSpacing: 0.1,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '내 옷장',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.5,
               ),
             ),
+            const SizedBox(height: 3),
+            Text(
+              '총 $totalCount벌의 아이템',
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── 카테고리 필터 바: 화면 하단에 고정된 가로 스크롤 칩 목록 ──
+  Widget _buildCategoryBar() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: categories.map((cat) {
+              final isActive = _activeCategory == cat;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  onTap: () => setState(() => _activeCategory = cat),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isActive ? Colors.black : AppColors.background,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      cat,
+                      style: TextStyle(
+                        color: isActive ? Colors.white : AppColors.textMuted,
+                        fontSize: 13,
+                        fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                        letterSpacing: 0.1,
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -751,38 +742,25 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
   Widget _buildFab() {
     return Positioned(
-      bottom: 24,
+      bottom: 74,
       right: 20,
       child: GestureDetector(
         onTap: _showAddBottomSheet,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          width: 56,
+          height: 56,
           decoration: BoxDecoration(
-            color: AppColors.navy,
-            borderRadius: BorderRadius.circular(10),
+            color: Colors.black,
+            shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                color: AppColors.navy.withValues(alpha: 0.35),
+                color: Colors.black.withValues(alpha: 0.35),
                 blurRadius: 20,
                 offset: const Offset(0, 6),
               ),
             ],
           ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.add, color: Colors.white, size: 20),
-              SizedBox(width: 8),
-              Text(
-                '옷 추가',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
+          child: const Icon(Icons.add, color: Colors.white, size: 26),
         ),
       ),
     );

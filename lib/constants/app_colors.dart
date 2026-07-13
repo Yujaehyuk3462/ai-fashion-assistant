@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 class AppColors {
-  static const navy = Color(0xFF0D1B3E);
-  static const navyLight = Color(0xFF1E3A7A);
+  // 앱 메인(브랜드) 컬러 — 기존 네이비 대신 블랙 계열로 통일.
+  // 다른 화면들이 참조하는 이름(navy/navyLight)은 그대로 유지한다.
+  static const navy = Color(0xFF000000);
+  static const navyLight = Color(0xFF2C2C2E);
   static const blue = Color(0xFF2563EB);
   static const blueLight = Color(0xFF3B82F6);
   static const bluePale = Color(0xFFEEF4FF);

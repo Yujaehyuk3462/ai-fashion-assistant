@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
@@ -31,11 +32,17 @@ void main() async {
   // 배포된 프로젝트 대신 로컬 Firebase Emulator에 붙어, 로컬 firestore.rules로
   // 저장 기능을 검증한다. 기본값 false라 일반 빌드/배포에는 전혀 영향 없음.
   // 안드로이드 에뮬레이터에서 호스트 PC는 10.0.2.2로 접근한다.
+  // App Check, 화면 방향 고정은 모바일(android/ios) 전용 네이티브 구현만 있어서
+  // windows 등 데스크톱에서 호출하면 MissingPluginException이 뜬다. UI 확인용
+  // 데스크톱 실행을 막지 않도록 모바일 플랫폼에서만 실행한다.
+  final isMobile = defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   const useEmulator = bool.fromEnvironment('USE_EMULATOR');
   if (useEmulator) {
     FirebaseFirestore.instance.useFirestoreEmulator('10.0.2.2', 8080);
     await FirebaseAuth.instance.useAuthEmulator('10.0.2.2', 9099);
-  } else {
+  } else if (isMobile) {
     await FirebaseAppCheck.instance.activate(
       androidProvider: AndroidProvider.debug,
       appleProvider: AppleProvider.debug,
@@ -45,7 +52,9 @@ void main() async {
   // 착장 캘린더(table_calendar)의 한국어 월/요일 표기를 위해 로케일 데이터 초기화.
   await initializeDateFormatting('ko_KR', null);
 
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  if (isMobile) {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
   runApp(const AiFashionAssistantApp());
 }
 
@@ -482,23 +491,23 @@ class _BottomNav extends StatelessWidget {
   const _BottomNav({required this.activeIndex, required this.onTap});
 
   static const _items = [
-    _NavItem(icon: Icons.home_outlined, activeIcon: Icons.home, label: '홈'),
+    _NavItem(icon: Icons.home_outlined, activeIcon: Icons.home, label: ''),
     _NavItem(
         icon: Icons.checkroom_outlined,
         activeIcon: Icons.checkroom,
-        label: '옷장'),
+        label: ''),
     _NavItem(
         icon: Icons.auto_awesome_outlined,
         activeIcon: Icons.auto_awesome,
-        label: 'AI 피팅'),
+        label: ''),
     _NavItem(
         icon: Icons.calendar_month_outlined,
         activeIcon: Icons.calendar_month,
-        label: '캘린더'),
+        label: ''),
     _NavItem(
         icon: Icons.settings_outlined,
         activeIcon: Icons.settings,
-        label: '설정'),
+        label: ''),
   ];
 
   @override
